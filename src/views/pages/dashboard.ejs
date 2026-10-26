@@ -1,0 +1,163 @@
+<%
+  const activeSites = websites.filter(w => w.active).length;
+  const bs = typeof browserStatus !== 'undefined' && browserStatus ? browserStatus : { active: 0, queued: 0, max: 3 };
+  const dataFs = filesystems.find(f => f.keys.includes('data')) || filesystems[0];
+  const lowFs = filesystems.find(f => f.low);
+  const waiting = typeof nav !== 'undefined' && nav ? nav.captchaWaiting : 0;
+  // Never show proxy credentials (user:pass@) on screen
+  const hideCreds = (p) => String(p || '').replace(/\/\/[^@/]*@/, '//').replace(/^[^/@]*@/, '');
+  const exampleSite = websites.length ? websites[0].name : 'mywebsite';
+%>
+<div class="page-header">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="page-subtitle">Ringkasan crawler dan daftar website.</p>
+  </div>
+  <div class="page-actions">
+    <a href="/admin/websites/new" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add Website</a>
+  </div>
+</div>
+
+<% if (isDefaultPassword) { %>
+<div class="alert alert-warning d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
+  <div class="flex-grow-1"><i class="bi bi-shield-exclamation me-1"></i>Password admin masih default (<code>admin</code>). Ganti sekarang supaya panel ini tidak bisa dibuka orang lain.</div>
+  <a href="/admin/settings#security" class="btn btn-sm btn-warning flex-shrink-0">Ganti password</a>
+</div>
+<% } %>
+<% if (lowFs) { %>
+<div class="alert alert-danger d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
+  <div class="flex-grow-1">
+    <i class="bi bi-hdd me-1"></i><strong>Disk hampir penuh</strong> — <code><%= lowFs.path %></code> sisa <%= fmtBytes(lowFs.freeBytes) %>
+    (terpakai <%= lowFs.usedPct %>%<% if (lowFs.inodesUsedPct !== null) { %>, inode <%= lowFs.inodesUsedPct %>%<% } %>).
+    Kalau penuh, crawl gagal dengan <code>ENOSPC</code>.
+  </div>
+  <a href="/admin/storage" class="btn btn-sm btn-danger flex-shrink-0">Buka Storage</a>
+</div>
+<% } %>
+<% if (waiting) { %>
+<div class="alert alert-info d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
+  <div class="flex-grow-1"><i class="bi bi-shield-exclamation me-1"></i><strong><%= waiting %></strong> sesi crawl menunggu CAPTCHA di-solve manual.</div>
+  <a href="/admin/captcha" class="btn btn-sm btn-info flex-shrink-0">Ambil alih</a>
+</div>
+<% } %>
+
+<div class="row row-cols-2 row-cols-xl-4 g-3 mb-4">
+  <div class="col">
+    <div class="card stat-card h-100">
+      <div class="card-body">
+        <div class="stat-label"><i class="bi bi-globe2"></i> Websites</div>
+        <div class="stat-value"><%= websites.length %></div>
+        <div class="stat-sub"><span class="text-success"><%= activeSites %> active</span> · <%= websites.length - activeSites %> inactive</div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card stat-card h-100">
+      <div class="card-body">
+        <div class="stat-label"><i class="bi bi-window-stack"></i> Browsers</div>
+        <div class="stat-value <%= bs.active > 0 ? 'text-warning' : '' %>"><%= bs.active %> <span class="fs-6 text-body-secondary">/ <%= bs.max %></span></div>
+        <div class="stat-sub"><%= bs.queued > 0 ? bs.queued + ' antre' : (bs.active > 0 ? 'sedang crawl' : 'idle') %></div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <a href="/admin/logs" class="card stat-card h-100 text-reset text-decoration-none">
+      <div class="card-body">
+        <div class="stat-label"><i class="bi bi-activity"></i> API hari ini</div>
+        <div class="stat-value"><%= fmtNumber(logStats.today) %></div>
+        <div class="stat-sub <%= logStats.todayErrors > 0 ? 'text-danger' : '' %>"><%= fmtNumber(logStats.todayErrors) %> error</div>
+      </div>
+    </a>
+  </div>
+  <div class="col">
+    <a href="/admin/storage" class="card stat-card h-100 text-reset text-decoration-none <%= lowFs ? 'border-danger' : '' %>">
+      <div class="card-body">
+        <div class="stat-label"><i class="bi bi-hdd"></i> Disk tersisa</div>
+        <div class="stat-value <%= lowFs ? 'text-danger' : '' %>"><%= dataFs ? fmtBytes(dataFs.freeBytes) : '–' %></div>
+        <div class="stat-sub"><%= dataFs ? 'terpakai ' + dataFs.usedPct + '% · ' : '' %>cache <%= fmtNumber(cache.count) %> gambar</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+    <h2 class="section-title me-auto"><i class="bi bi-globe2 me-1"></i>Websites</h2>
+    <% if (websites.length > 3) { %>
+      <input type="search" class="form-control form-control-sm" style="max-width: 240px" placeholder="Cari website…" id="websiteSearch" aria-label="Cari website">
+    <% } %>
+  </div>
+  <% if (!websites.length) { %>
+    <div class="card-body text-center py-5">
+      <i class="bi bi-globe2 display-6 text-body-secondary"></i>
+      <p class="mt-3 mb-1 fw-semibold">Belum ada website</p>
+      <p class="text-body-secondary small mb-3">Tambahkan website pertama, lalu atur selector untuk tiap page type.</p>
+      <a href="/admin/websites/new" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add Website</a>
+    </div>
+  <% } else { %>
+    <div class="list-group list-group-flush" id="websiteList">
+      <% websites.forEach(w => { const n = configCounts[w.id] || 0; %>
+      <div class="list-group-item py-3" data-search="<%= (w.name + ' ' + w.base_url).toLowerCase() %>">
+        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 align-items-md-center">
+          <div class="min-w-0 flex-grow-1">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+              <a href="/admin/websites/<%= w.id %>" class="fw-semibold text-decoration-none"><%= w.name %></a>
+              <% if (w.active) { %><span class="badge rounded-pill text-bg-success">Active</span><% } else { %><span class="badge rounded-pill text-bg-secondary">Inactive</span><% } %>
+              <% if (w.image_proxy) { %><span class="badge rounded-pill text-bg-info" title="Image cache method: <%= w.image_cache_method || 'browser' %>"><i class="bi bi-images me-1"></i>Img Proxy</span><% } %>
+              <% if (w.proxy) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis" title="<%= hideCreds(w.proxy) %>"><i class="bi bi-shield-lock me-1"></i>Proxy</span><% } %>
+              <% if (w.timezone) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis"><i class="bi bi-clock me-1"></i><%= w.timezone %></span><% } %>
+            </div>
+            <div class="website-url mt-1"><%= w.base_url %></div>
+            <div class="small text-body-secondary mt-1"><i class="bi bi-sliders me-1"></i><%= n %> page config<%= n === 1 ? '' : 's' %></div>
+          </div>
+          <div class="d-flex gap-2 flex-shrink-0">
+            <a href="/admin/websites/<%= w.id %>/config/katalog" class="btn btn-sm btn-outline-primary"><i class="bi bi-sliders me-1"></i>Config</a>
+            <a href="/admin/websites/<%= w.id %>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
+          </div>
+        </div>
+      </div>
+      <% }) %>
+    </div>
+    <div class="card-body py-3 text-center text-body-secondary small d-none" id="websiteNoMatch">Tidak ada website yang cocok.</div>
+  <% } %>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2 class="section-title"><i class="bi bi-terminal me-1"></i>Pakai API</h2></div>
+  <div class="card-body">
+    <p class="small text-body-secondary">
+      Semua endpoint memakai GET dengan parameter <code>website</code> dan <code>url</code>. Tambahkan <code>&amp;html=true</code> untuk ikut menerima HTML mentah (berguna saat debug selector).
+      <% if (apiKeySet) { %>API key aktif — kirim <code>&amp;api_key=…</code> atau header <code>X-API-Key</code>.<% } %>
+    </p>
+    <div class="list-group">
+      <% [['/api/katalog', 'Daftar komik (katalog)'], ['/api/komik', 'Detail komik'], ['/api/chapters', 'Daftar chapter'], ['/api/chapter', 'Gambar chapter']].forEach(([ep, desc]) => { const u = apiBase + ep + '?website=' + exampleSite + '&url=https://…'; %>
+      <div class="list-group-item d-flex gap-2 align-items-center">
+        <div class="min-w-0 flex-grow-1">
+          <div class="small text-body-secondary"><%= desc %></div>
+          <code class="small text-break-all"><%= u %></code>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0" data-copy="<%= u %>" title="Copy" aria-label="Copy URL"><i class="bi bi-clipboard"></i></button>
+      </div>
+      <% }) %>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const input = document.getElementById('websiteSearch');
+  if (!input) return;
+  const rows = Array.from(document.querySelectorAll('#websiteList [data-search]'));
+  const none = document.getElementById('websiteNoMatch');
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach((row) => {
+      const hit = !q || row.dataset.search.includes(q);
+      row.classList.toggle('d-none', !hit);
+      if (hit) shown++;
+    });
+    none.classList.toggle('d-none', shown > 0);
+  });
+})();
+</script>

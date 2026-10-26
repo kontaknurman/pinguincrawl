@@ -1,0 +1,15 @@
+<%
+  // flash: { type: 'success'|'danger'|'warning'|'info', text } or an array of them
+  const _flash = typeof flash !== 'undefined' && flash ? (Array.isArray(flash) ? flash : [flash]) : [];
+  const _icons = { success: 'check-circle-fill', danger: 'exclamation-octagon-fill', warning: 'exclamation-triangle-fill', info: 'info-circle-fill' };
+%>
+<div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3">
+  <% _flash.forEach(f => { const dark = f.type === 'warning' || f.type === 'info'; %>
+  <div class="toast show align-items-center text-bg-<%= f.type %> border-0" role="<%= f.type === 'danger' ? 'alert' : 'status' %>" aria-live="polite" data-autoshow data-type="<%= f.type %>">
+    <div class="d-flex">
+      <div class="toast-body"><i class="bi bi-<%= _icons[f.type] || _icons.info %> me-2"></i><%= f.text %></div>
+      <button type="button" class="btn-close <%= dark ? '' : 'btn-close-white' %> me-2 m-auto" data-bs-dismiss="toast" aria-label="Tutup"></button>
+    </div>
+  </div>
+  <% }) %>
+</div>

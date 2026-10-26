@@ -1,0 +1,259 @@
+<%
+  const isEdit = !!(website && website.id);
+  const w = website || {};
+  const method = w.image_cache_method || 'browser';
+  const defaultTypes = ['katalog', 'komik_detail', 'chapter_list', 'chapter'];
+  const cpts = typeof customPageTypes !== 'undefined' && customPageTypes ? customPageTypes : [];
+  const endpointFor = (pt) => ({ katalog: '/api/katalog', komik_detail: '/api/komik', chapter_list: '/api/chapters', chapter: '/api/chapter' }[pt] || '/api/custom/' + pt);
+  const _error = typeof error !== 'undefined' ? error : null;
+  const _cptError = typeof cpt_error !== 'undefined' ? cpt_error : null;
+  let cookieInfo = null;
+  try {
+    const list = JSON.parse(w.cookies || '[]');
+    if (Array.isArray(list)) cookieInfo = { count: list.length, cf: list.some(c => c && c.name === 'cf_clearance') };
+  } catch (e) { /* shown as invalid by the JSON check */ }
+  const timezones = ['Asia/Jakarta', 'Asia/Makassar', 'Asia/Jayapura', 'Asia/Singapore', 'Asia/Kuala_Lumpur', 'Asia/Bangkok', 'Asia/Ho_Chi_Minh', 'Asia/Manila', 'Asia/Hong_Kong', 'Asia/Taipei', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Shanghai', 'Asia/Kolkata', 'Asia/Dubai', 'Europe/London', 'Europe/Amsterdam', 'Europe/Berlin', 'Europe/Paris', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Australia/Sydney', 'UTC'];
+%>
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="/admin">Dashboard</a></li>
+    <li class="breadcrumb-item active" aria-current="page"><%= isEdit ? w.name : 'Add Website' %></li>
+  </ol>
+</nav>
+
+<div class="page-header">
+  <div>
+    <h1><%= isEdit ? w.name : 'Add Website' %></h1>
+    <p class="page-subtitle"><%= isEdit ? 'Pengaturan website, page config, dan custom page type.' : 'Daftarkan website baru, lalu atur selector untuk tiap page type.' %></p>
+  </div>
+  <% if (isEdit) { %>
+  <div class="page-actions">
+    <a href="#page-configs" class="btn btn-outline-primary"><i class="bi bi-sliders me-1"></i>Page configs</a>
+  </div>
+  <% } %>
+</div>
+
+<% if (_error) { %>
+  <div class="alert alert-danger"><i class="bi bi-exclamation-octagon me-1"></i><%= _error %></div>
+<% } %>
+
+<form method="POST" action="<%= isEdit ? '/admin/websites/' + w.id : '/admin/websites' %>" data-dirty-guard>
+  <div class="row g-4">
+    <div class="col-xl-6">
+      <section class="card h-100">
+        <div class="card-header"><h2 class="section-title"><i class="bi bi-info-circle me-1"></i>Informasi dasar</h2></div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-label" for="name">Name <span class="text-danger">*</span></label>
+            <input type="text" id="name" name="name" class="form-control font-monospace" value="<%= w.name || '' %>" required placeholder="mis. mywebsite" autocapitalize="none" spellcheck="false">
+            <small class="form-hint">Slug unik, dipakai di API: <code>?website=<%= w.name || 'mywebsite' %></code>. Otomatis huruf kecil.</small>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="base_url">Base URL <span class="text-danger">*</span></label>
+            <input type="url" id="base_url" name="base_url" class="form-control" value="<%= w.base_url || '' %>" required placeholder="https://example.com" inputmode="url">
+          </div>
+          <% if (isEdit) { %>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" name="active" id="active" <%= w.active ? 'checked' : '' %>>
+            <label class="form-check-label" for="active">Active</label>
+          </div>
+          <% } %>
+        </div>
+      </section>
+    </div>
+
+    <div class="col-xl-6">
+      <section class="card h-100">
+        <div class="card-header"><h2 class="section-title"><i class="bi bi-shield-lock me-1"></i>Jaringan &amp; identitas browser</h2></div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-label" for="proxy">Proxy <small class="text-body-secondary">(opsional)</small></label>
+            <input type="text" id="proxy" name="proxy" class="form-control font-monospace" value="<%= w.proxy || '' %>" placeholder="http://user:pass@host:port" autocapitalize="none" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="user_agent">User Agent <small class="text-body-secondary">(opsional)</small></label>
+            <input type="text" id="user_agent" name="user_agent" class="form-control font-monospace" value="<%= w.user_agent || '' %>" placeholder="Kosong = UA bawaan stealth (disarankan)" spellcheck="false">
+            <small class="form-hint">Kosongkan kecuali perlu — UA yang dipaksa bisa bikin client hints tidak konsisten dan dideteksi Cloudflare.</small>
+          </div>
+          <div>
+            <label class="form-label" for="timezone">Timezone <small class="text-body-secondary">(opsional)</small></label>
+            <input type="text" id="timezone" name="timezone" class="form-control" value="<%= w.timezone || '' %>" placeholder="Asia/Singapore" list="tzList" autocapitalize="none" spellcheck="false">
+            <datalist id="tzList">
+              <% timezones.forEach(tz => { %><option value="<%= tz %>"></option><% }) %>
+            </datalist>
+            <small class="form-hint">Samakan dengan negara IP/proxy. Container jalan di UTC, jadi proxy di negara lain bikin jam browser tidak cocok dengan geolokasi IP — sinyal yang dicek Cloudflare.</small>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="col-12">
+      <section class="card">
+        <div class="card-header"><h2 class="section-title"><i class="bi bi-images me-1"></i>Image proxy / cache</h2></div>
+        <div class="card-body">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" name="image_proxy" id="imageProxy" <%= w.image_proxy ? 'checked' : '' %>>
+            <label class="form-check-label" for="imageProxy">Enable Image Proxy/Cache</label>
+          </div>
+          <small class="form-hint">Gambar disalurkan lewat server ini — untuk URL <code>blob:</code> atau gambar yang membatasi referrer. URL gambar di JSON API otomatis diganti URL proxy.</small>
+          <div id="cacheMethodGroup" class="mt-3 <%= w.image_proxy ? '' : 'd-none' %>">
+            <div class="form-label">Image cache method</div>
+            <div class="row g-2">
+              <% [
+                ['browser', 'Browser Intercept', 'Gambar di-capture dari response browser — efisien, 1x download lewat proxy.'],
+                ['node', 'Node.js HTTP', 'Server mendownload terpisah dengan header Referer.'],
+                ['proxy', 'Lazy Proxy', 'Di-cache saat gambar pertama kali diakses, bukan saat crawl.'],
+              ].forEach(([val, title, desc]) => { %>
+              <div class="col-md-4">
+                <label class="option-card">
+                  <input class="form-check-input" type="radio" name="image_cache_method" value="<%= val %>" <%= method === val ? 'checked' : '' %>>
+                  <span><span class="fw-semibold d-block"><%= title %></span><span class="small text-body-secondary"><%= desc %></span></span>
+                </label>
+              </div>
+              <% }) %>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="col-12">
+      <section class="card">
+        <div class="card-header"><h2 class="section-title"><i class="bi bi-braces me-1"></i>Header, cookie &amp; localStorage <small class="text-body-secondary fw-normal">(opsional, JSON)</small></h2></div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-lg-4">
+              <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                <label class="form-label mb-0" for="custom_headers">Custom Headers</label>
+                <span class="d-flex gap-2 align-items-center">
+                  <span class="json-status badge" data-json-status-for="custom_headers"></span>
+                  <button type="button" class="btn btn-sm btn-link p-0" data-json-format="custom_headers">Rapikan</button>
+                </span>
+              </div>
+              <textarea name="custom_headers" id="custom_headers" class="form-control font-monospace" rows="6" data-json="object" spellcheck="false" placeholder='{"Referer": "https://example.com"}'><%= w.custom_headers || '{}' %></textarea>
+              <small class="form-hint">Object JSON. Jangan isi <code>Accept-Language</code> kecuali tahu efeknya.</small>
+            </div>
+            <div class="col-lg-4">
+              <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                <label class="form-label mb-0" for="cookies">Cookies</label>
+                <span class="d-flex gap-2 align-items-center">
+                  <span class="json-status badge" data-json-status-for="cookies"></span>
+                  <button type="button" class="btn btn-sm btn-link p-0" data-json-format="cookies">Rapikan</button>
+                </span>
+              </div>
+              <textarea name="cookies" id="cookies" class="form-control font-monospace" rows="6" data-json="array" spellcheck="false" placeholder='[{"name":"key","value":"val","domain":".example.com"}]'><%= w.cookies || '[]' %></textarea>
+              <small class="form-hint">
+                Array JSON. Otomatis diperbarui setelah lolos Cloudflare.
+                <% if (cookieInfo && cookieInfo.count) { %><br><i class="bi bi-cookie"></i> <%= cookieInfo.count %> cookie tersimpan<%= cookieInfo.cf ? ' (termasuk cf_clearance)' : '' %>.<% } %>
+              </small>
+            </div>
+            <div class="col-lg-4">
+              <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                <label class="form-label mb-0" for="local_storage">LocalStorage</label>
+                <span class="d-flex gap-2 align-items-center">
+                  <span class="json-status badge" data-json-status-for="local_storage"></span>
+                  <button type="button" class="btn btn-sm btn-link p-0" data-json-format="local_storage">Rapikan</button>
+                </span>
+              </div>
+              <textarea name="local_storage" id="local_storage" class="form-control font-monospace" rows="6" data-json="object" spellcheck="false" placeholder='{"token": "abc123", "settings": "dark"}'><%= w.local_storage || '{}' %></textarea>
+              <small class="form-hint">Object JSON key-value, di-inject sebelum halaman load.</small>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="sticky-actions">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i><%= isEdit ? 'Save' : 'Create Website' %></button>
+    <a href="/admin" class="btn btn-outline-secondary">Cancel</a>
+    <span class="dirty-note ms-auto"><i class="bi bi-circle-fill me-1" style="font-size:.5rem"></i>Ada perubahan yang belum disimpan</span>
+  </div>
+</form>
+
+<% if (isEdit) { %>
+<section class="card mt-4" id="page-configs">
+  <div class="card-header"><h2 class="section-title"><i class="bi bi-sliders me-1"></i>Page configs</h2></div>
+  <div class="card-body">
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-xl-4 g-3">
+      <% pageTypes.forEach(pt => { const has = pageConfigs.find(c => c.page_type === pt); const isCustom = !defaultTypes.includes(pt); const exampleUrl = apiBase + endpointFor(pt) + '?website=' + w.name + '&url='; %>
+      <div class="col">
+        <div class="card h-100 website-item position-relative <%= isCustom ? 'border-info-subtle' : '' %>">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start gap-2">
+              <a href="/admin/websites/<%= w.id %>/config/<%= pt %>" class="fw-semibold text-decoration-none stretched-link"><%= pt %></a>
+              <% if (has) { %><span class="badge text-bg-success">Configured</span><% } else { %><span class="badge text-bg-secondary">Not set</span><% } %>
+            </div>
+            <div class="d-flex align-items-center gap-1 mt-2">
+              <code class="small text-break-all"><%= endpointFor(pt) %></code>
+              <button type="button" class="btn btn-sm btn-link p-0 ms-auto position-relative" style="z-index:2" data-copy="<%= exampleUrl %>" title="Copy URL API" aria-label="Copy URL API"><i class="bi bi-clipboard"></i></button>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+              <% if (isCustom) { %><span class="badge text-bg-info">Custom</span><% } else { %><span></span><% } %>
+              <span class="small text-primary"><i class="bi bi-gear me-1"></i><%= has ? 'Edit' : 'Setup' %></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <% }) %>
+    </div>
+  </div>
+</section>
+
+<section class="card mt-4" id="page-types">
+  <div class="card-header"><h2 class="section-title"><i class="bi bi-plus-square me-1"></i>Custom page types</h2></div>
+  <div class="card-body">
+    <% if (_cptError) { %><div class="alert alert-danger py-2"><%= _cptError %></div><% } %>
+    <p class="small text-body-secondary">Tambah page type custom untuk website ini. Setiap custom type punya API endpoint <code>/api/custom/{name}</code>.</p>
+    <form method="POST" action="/admin/websites/<%= w.id %>/custom-types" class="row g-2 mb-3">
+      <div class="col-sm-4">
+        <input type="text" class="form-control font-monospace" name="name" placeholder="name (slug)" pattern="[a-z0-9_]+" title="Huruf kecil, angka, underscore" required aria-label="Name" autocapitalize="none" spellcheck="false">
+      </div>
+      <div class="col-sm-5">
+        <input type="text" class="form-control" name="label" placeholder="Label (nama tampilan)" required aria-label="Label">
+      </div>
+      <div class="col-sm-3 d-grid">
+        <button type="submit" class="btn btn-outline-primary"><i class="bi bi-plus-lg me-1"></i>Add Type</button>
+      </div>
+    </form>
+    <% if (cpts.length) { %>
+    <table class="table table-sm align-middle table-stack mb-0">
+      <thead><tr><th>Name</th><th>Label</th><th>API endpoint</th><th class="text-end">Actions</th></tr></thead>
+      <tbody>
+        <% cpts.forEach(ct => { %>
+        <tr>
+          <td data-label="Name"><code><%= ct.name %></code></td>
+          <td data-label="Label"><%= ct.label %></td>
+          <td data-label="Endpoint"><code class="text-break-all">/api/custom/<%= ct.name %></code></td>
+          <td class="text-end td-actions text-nowrap">
+            <a href="/admin/websites/<%= w.id %>/config/<%= ct.name %>" class="btn btn-sm btn-outline-info"><i class="bi bi-gear me-1"></i>Config</a>
+            <form method="POST" action="/admin/websites/<%= w.id %>/custom-types/<%= ct.id %>/delete" class="d-inline" data-confirm="Delete custom type &quot;<%= ct.name %>&quot;? Config for this type will also be deleted.">
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete" aria-label="Delete <%= ct.name %>"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <% } %>
+  </div>
+</section>
+
+<section class="card border-danger-subtle mt-4 mb-2">
+  <div class="card-header bg-danger-subtle text-danger-emphasis"><h2 class="section-title"><i class="bi bi-exclamation-triangle me-1"></i>Danger zone</h2></div>
+  <div class="card-body d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
+    <div class="flex-grow-1 small">Hapus website ini beserta semua page config dan custom page type-nya. Tidak bisa dibatalkan.</div>
+    <form method="POST" action="/admin/websites/<%= w.id %>/delete" data-confirm="Delete website &quot;<%= w.name %>&quot; and all its configs?">
+      <button type="submit" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete Website</button>
+    </form>
+  </div>
+</section>
+<% } %>
+
+<script>
+(function () {
+  const toggle = document.getElementById('imageProxy');
+  const group = document.getElementById('cacheMethodGroup');
+  if (toggle && group) toggle.addEventListener('change', () => group.classList.toggle('d-none', !toggle.checked));
+})();
+</script>

@@ -1,0 +1,13 @@
+node_modules/
+data/
+*.db
+debug.png
+.env
+.git
+.gitignore
+tasks/
+websites/
+json-return/
+README.md
+canvas.md
+cloudflare.md

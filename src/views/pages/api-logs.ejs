@@ -1,0 +1,216 @@
+<%
+  const qs = (overrides) => {
+    const params = new URLSearchParams();
+    const merged = { status: filters.status, endpoint: filters.endpoint, website: filters.website, ...overrides };
+    for (const [k, v] of Object.entries(merged)) if (v) params.set(k, v);
+    const s = params.toString();
+    return '/admin/logs' + (s ? '?' + s : '');
+  };
+  const hasFilter = !!(filters.status || filters.endpoint || filters.website);
+  // Windowed pagination: 1 … p-2 p-1 p p+1 p+2 … N
+  const pages = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || Math.abs(p - currentPage) <= 2) pages.push(p);
+    else if (pages[pages.length - 1] !== '…') pages.push('…');
+  }
+  const endpoints = facets.endpoints.slice();
+  if (filters.endpoint && !endpoints.includes(filters.endpoint)) endpoints.push(filters.endpoint);
+  const websitesSeen = facets.websites.slice();
+  if (filters.website && !websitesSeen.includes(filters.website)) websitesSeen.push(filters.website);
+%>
+<div class="page-header">
+  <div>
+    <h1>API Logs</h1>
+    <p class="page-subtitle">Setiap request API tercatat. Log lebih dari <%= retentionDays %> hari dihapus otomatis.</p>
+  </div>
+  <div class="page-actions">
+    <div class="dropdown">
+      <button class="btn btn-outline-danger dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-trash me-1"></i>Hapus log</button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li>
+          <form method="POST" action="/admin/logs/delete-errors" data-confirm="Hapus semua error log?">
+            <button type="submit" class="dropdown-item" <%= stats.errors === 0 ? 'disabled' : '' %>><i class="bi bi-exclamation-circle me-2"></i>Error log (<%= fmtNumber(stats.errors) %>)</button>
+          </form>
+        </li>
+        <li>
+          <form method="POST" action="/admin/logs/delete-old" data-confirm="Hapus <%= stats.old %> log yang lebih lama dari <%= retentionDays %> hari?">
+            <button type="submit" class="dropdown-item" <%= stats.old === 0 ? 'disabled' : '' %>><i class="bi bi-clock-history me-2"></i>Lebih dari <%= retentionDays %> hari (<%= fmtNumber(stats.old) %>)</button>
+          </form>
+        </li>
+        <li><hr class="dropdown-divider"></li>
+        <li>
+          <form method="POST" action="/admin/logs/delete-all" data-confirm="Hapus SEMUA log?">
+            <button type="submit" class="dropdown-item text-danger" <%= stats.total === 0 ? 'disabled' : '' %>><i class="bi bi-trash me-2"></i>Semua log (<%= fmtNumber(stats.total) %>)</button>
+          </form>
+        </li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="row row-cols-2 row-cols-md-4 g-3 mb-3">
+  <div class="col">
+    <a href="/admin/logs" class="card stat-card h-100 text-reset text-decoration-none">
+      <div class="card-body"><div class="stat-label">Total</div><div class="stat-value"><%= fmtNumber(stats.total) %></div></div>
+    </a>
+  </div>
+  <div class="col">
+    <a href="/admin/logs?status=error" class="card stat-card h-100 text-reset text-decoration-none <%= stats.errors ? 'border-danger-subtle' : '' %>">
+      <div class="card-body"><div class="stat-label">Errors</div><div class="stat-value <%= stats.errors ? 'text-danger' : '' %>"><%= fmtNumber(stats.errors) %></div></div>
+    </a>
+  </div>
+  <div class="col">
+    <div class="card stat-card h-100">
+      <div class="card-body"><div class="stat-label">Hari ini</div><div class="stat-value"><%= fmtNumber(stats.today) %></div><div class="stat-sub"><%= fmtNumber(stats.todayErrors) %> error</div></div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card stat-card h-100">
+      <div class="card-body"><div class="stat-label">&gt; <%= retentionDays %> hari</div><div class="stat-value"><%= fmtNumber(stats.old) %></div><div class="stat-sub">segera dihapus otomatis</div></div>
+    </div>
+  </div>
+</div>
+
+<form method="GET" action="/admin/logs" class="card mb-3">
+  <div class="card-body py-2">
+    <div class="row g-2 align-items-end">
+      <div class="col-6 col-md-3">
+        <label class="form-label small mb-1" for="fStatus">Status</label>
+        <select class="form-select form-select-sm" id="fStatus" name="status" data-autosubmit>
+          <option value="">Semua</option>
+          <option value="success" <%= filters.status === 'success' ? 'selected' : '' %>>Success</option>
+          <option value="error" <%= filters.status === 'error' ? 'selected' : '' %>>Error</option>
+        </select>
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label small mb-1" for="fEndpoint">Endpoint</label>
+        <select class="form-select form-select-sm" id="fEndpoint" name="endpoint" data-autosubmit>
+          <option value="">Semua</option>
+          <% endpoints.forEach(ep => { %><option value="<%= ep %>" <%= filters.endpoint === ep ? 'selected' : '' %>><%= ep %></option><% }) %>
+        </select>
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label small mb-1" for="fWebsite">Website</label>
+        <select class="form-select form-select-sm" id="fWebsite" name="website" data-autosubmit>
+          <option value="">Semua</option>
+          <% websitesSeen.forEach(ws => { %><option value="<%= ws %>" <%= filters.website === ws ? 'selected' : '' %>><%= ws %></option><% }) %>
+        </select>
+      </div>
+      <div class="col-6 col-md-3 d-flex gap-2">
+        <noscript><button type="submit" class="btn btn-sm btn-primary">Filter</button></noscript>
+        <% if (hasFilter) { %><a href="/admin/logs" class="btn btn-sm btn-outline-secondary w-100"><i class="bi bi-x-lg me-1"></i>Reset filter</a><% } %>
+      </div>
+    </div>
+  </div>
+</form>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between small">
+    <span><%= fmtNumber(totalCount) %> log<%= hasFilter ? ' cocok' : '' %></span>
+    <span>Halaman <%= currentPage %> / <%= totalPages %></span>
+  </div>
+  <div class="card-body p-2 p-md-0">
+    <table class="table table-hover table-sm align-middle mb-0 table-stack">
+      <thead>
+        <tr><th class="ps-3">Waktu</th><th>Endpoint</th><th>Website</th><th>Status</th><th class="text-end">Durasi</th><th>Detail</th><th class="pe-3"></th></tr>
+      </thead>
+      <tbody>
+        <% logs.forEach((log, i) => { %>
+        <tr class="<%= log.status === 'error' ? 'row-error' : '' %>">
+          <td data-label="Waktu" class="text-nowrap ps-md-3"><small><time data-utc="<%= log.created_at %>"><%= log.created_at %></time></small></td>
+          <td data-label="Endpoint"><code><%= log.endpoint %></code></td>
+          <td data-label="Website"><%= log.website || '–' %></td>
+          <td data-label="Status"><span class="badge <%= log.status === 'error' ? 'text-bg-danger' : 'text-bg-success' %>"><%= log.status_code %></span></td>
+          <td data-label="Durasi" class="text-end text-nowrap"><%= fmtDuration(log.duration_ms) %></td>
+          <td class="td-full">
+            <% if (log.error_message) { %><div class="small text-danger-emphasis text-break"><%= log.error_message %></div><% } %>
+            <% if (log.url) { %><div class="small text-body-secondary text-truncate" style="max-width: 360px" title="<%= log.url %>"><%= log.url %></div><% } %>
+          </td>
+          <td class="td-actions text-end pe-md-3">
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-log-index="<%= i %>" title="Detail" aria-label="Detail log"><i class="bi bi-eye"></i><span class="d-md-none ms-1">Detail</span></button>
+          </td>
+        </tr>
+        <% }) %>
+        <% if (!logs.length) { %>
+        <tr><td colspan="7" class="td-full text-center text-body-secondary py-4">Tidak ada log<%= hasFilter ? ' untuk filter ini' : '' %>.</td></tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<% if (totalPages > 1) { %>
+<nav class="mt-3" aria-label="Halaman log">
+  <ul class="pagination pagination-sm justify-content-center flex-wrap">
+    <li class="page-item <%= currentPage === 1 ? 'disabled' : '' %>"><a class="page-link" href="<%= qs({ page: currentPage - 1 }) %>" aria-label="Sebelumnya">&laquo;</a></li>
+    <% pages.forEach(p => { %>
+      <% if (p === '…') { %>
+        <li class="page-item disabled"><span class="page-link">…</span></li>
+      <% } else { %>
+        <li class="page-item <%= p === currentPage ? 'active' : '' %>"><a class="page-link" href="<%= qs({ page: p }) %>"><%= p %></a></li>
+      <% } %>
+    <% }) %>
+    <li class="page-item <%= currentPage === totalPages ? 'disabled' : '' %>"><a class="page-link" href="<%= qs({ page: currentPage + 1 }) %>" aria-label="Berikutnya">&raquo;</a></li>
+  </ul>
+</nav>
+<% } %>
+
+<div class="modal fade" id="logModal" tabindex="-1" aria-labelledby="logModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable modal-fullscreen-sm-down">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fs-6" id="logModalTitle">Detail log</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <dl class="row small mb-2" id="logMeta"></dl>
+        <div class="alert alert-danger py-2 small d-none" id="logError"></div>
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <span class="small fw-semibold">Response JSON</span>
+          <button type="button" class="btn btn-sm btn-link p-0" data-copy-target="#logBody"><i class="bi bi-clipboard me-1"></i>Copy</button>
+        </div>
+        <pre class="json-preview bg-body-tertiary border rounded p-2 mb-0" id="logBody"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="logData"><%- JSON.stringify(logs.map(l => ({ endpoint: l.endpoint, website: l.website, url: l.url, status_code: l.status_code, error_message: l.error_message, response_body: l.response_body, duration_ms: l.duration_ms, created_at: l.created_at, ip: l.ip }))).replace(/</g, '\\u003c') %></script>
+<script>
+(function () {
+  const data = JSON.parse(document.getElementById('logData').textContent);
+  const modalEl = document.getElementById('logModal');
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-log-index]');
+    if (!btn) return;
+    const log = data[Number(btn.dataset.logIndex)];
+    if (!log) return;
+    document.getElementById('logModalTitle').textContent = log.endpoint + ' · ' + log.status_code;
+    const meta = document.getElementById('logMeta');
+    meta.innerHTML = '';
+    const add = (label, value) => {
+      if (value === null || value === undefined || value === '') return;
+      const dt = document.createElement('dt');
+      dt.className = 'col-sm-3 text-body-secondary fw-normal';
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.className = 'col-sm-9 text-break';
+      dd.textContent = value;
+      meta.append(dt, dd);
+    };
+    const when = new Date(String(log.created_at).replace(' ', 'T') + 'Z');
+    add('Waktu', isNaN(when) ? log.created_at : when.toLocaleString());
+    add('Website', log.website);
+    add('URL', log.url);
+    add('Durasi', log.duration_ms + ' ms');
+    add('IP', log.ip);
+    const err = document.getElementById('logError');
+    err.textContent = log.error_message || '';
+    err.classList.toggle('d-none', !log.error_message);
+    let body = log.response_body || '(kosong)';
+    try { body = JSON.stringify(JSON.parse(body), null, 2); } catch (e2) { /* truncated at 5 KB — shown as stored */ }
+    document.getElementById('logBody').textContent = body;
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  });
+})();
+</script>

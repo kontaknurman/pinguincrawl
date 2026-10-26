@@ -1,0 +1,27 @@
+<div class="auth-card">
+  <div class="text-center mb-4">
+    <div class="auth-brand"><i class="bi bi-bug-fill text-primary"></i> CrawlKomik</div>
+    <div class="text-body-secondary small">Admin panel</div>
+  </div>
+  <div class="card shadow-sm">
+    <div class="card-body p-4">
+      <h1 class="h5 mb-2">Two-Factor Authentication</h1>
+      <p class="text-body-secondary small">Masukkan 6 digit kode dari aplikasi authenticator.</p>
+
+      <% if (typeof error !== 'undefined' && error) { %>
+        <div class="alert alert-danger py-2"><i class="bi bi-exclamation-octagon me-1"></i><%= error %></div>
+      <% } %>
+
+      <form method="POST" action="/admin/login">
+        <div class="mb-3">
+          <input type="text" class="form-control font-monospace otp-input" name="totp_code" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required autofocus autocomplete="one-time-code" inputmode="numeric" aria-label="Kode authenticator">
+        </div>
+        <button type="submit" class="btn btn-primary w-100">Verify</button>
+      </form>
+
+      <div class="text-center mt-3">
+        <a href="/admin/login" class="text-body-secondary small">&larr; Back to Login</a>
+      </div>
+    </div>
+  </div>
+</div>

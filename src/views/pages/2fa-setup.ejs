@@ -1,0 +1,63 @@
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="/admin/settings#security">Settings</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Setup 2FA</li>
+  </ol>
+</nav>
+
+<div class="page-header">
+  <div>
+    <h1>Two-Factor Authentication</h1>
+    <p class="page-subtitle">Login juga meminta kode dari Google Authenticator (atau aplikasi TOTP lain).</p>
+  </div>
+</div>
+
+<% if (typeof error !== 'undefined' && error) { %>
+  <div class="alert alert-danger py-2"><i class="bi bi-exclamation-octagon me-1"></i><%= error %></div>
+<% } %>
+
+<% if (totpEnabled) { %>
+  <div class="alert alert-info">
+    2FA sudah <strong>aktif</strong>. Kode authenticator diminta setiap login.
+  </div>
+  <a href="/admin/settings#security" class="btn btn-outline-secondary">&larr; Back to Settings</a>
+<% } else { %>
+  <div class="row g-4">
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6"><span class="badge text-bg-primary me-1">1</span> Scan QR code</h2>
+          <p class="text-body-secondary small">Buka Google Authenticator (atau aplikasi TOTP lain) lalu scan QR ini:</p>
+          <% if (qrDataUrl) { %>
+            <div class="text-center mb-3">
+              <img src="<%= qrDataUrl %>" alt="QR code 2FA" class="img-fluid" style="max-width: 220px; background: #fff; padding: 8px; border-radius: 8px;">
+            </div>
+          <% } %>
+          <p class="text-body-secondary small mb-1">Atau masukkan secret key ini secara manual:</p>
+          <div class="input-group">
+            <input type="text" class="form-control font-monospace" value="<%= secret %>" readonly id="totp-secret" aria-label="Secret key">
+            <button class="btn btn-outline-secondary" type="button" data-copy-target="#totp-secret"><i class="bi bi-clipboard me-1"></i>Copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6"><span class="badge text-bg-primary me-1">2</span> Verifikasi kode</h2>
+          <p class="text-body-secondary small">Masukkan 6 digit kode dari aplikasi untuk mengaktifkan 2FA:</p>
+          <form method="POST" action="/admin/2fa/enable">
+            <input type="hidden" name="secret" value="<%= secret %>">
+            <div class="mb-3">
+              <input type="text" class="form-control font-monospace otp-input" name="totp_code" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required autocomplete="one-time-code" inputmode="numeric" aria-label="Kode authenticator">
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Enable 2FA</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="mt-3">
+    <a href="/admin/settings#security" class="btn btn-outline-secondary">&larr; Back to Settings</a>
+  </div>
+<% } %>

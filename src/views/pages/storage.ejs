@@ -1,0 +1,163 @@
+<%
+  const r = report;
+  const fsLabel = (f) => (f.keys.length > 1 ? 'Disk server — profil browser, database & cache gambar'
+    : f.keys[0] === 'tmp' ? 'Temp — profil browser' : 'Data — database & cache gambar');
+  const fsCol = r.filesystems.length > 1 ? 'col-lg-6' : 'col-12';
+  const barClass = (pct) => (pct >= 90 ? 'bg-danger' : pct >= 75 ? 'bg-warning' : 'bg-success');
+  const lc = r.lastCleanup;
+%>
+<div class="page-header">
+  <div>
+    <h1>Storage</h1>
+    <p class="page-subtitle">Pemakaian disk dan pembersihan otomatis — supaya crawl tidak gagal dengan <code>ENOSPC: no space left on device</code>.</p>
+  </div>
+  <div class="page-actions">
+    <form method="POST" action="/admin/storage/cleanup">
+      <button type="submit" class="btn btn-primary" <%= r.cleaning ? 'disabled' : '' %>>
+        <% if (r.cleaning) { %><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Membersihkan…<% } else { %><i class="bi bi-stars me-1"></i>Bersihkan sekarang<% } %>
+      </button>
+    </form>
+  </div>
+</div>
+
+<% if (r.cleaning) { %>
+<div class="alert alert-info py-2"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Pembersihan sedang berjalan — halaman ini memuat ulang otomatis.</div>
+<script>setTimeout(() => location.reload(), 3000);</script>
+<% } %>
+
+<!-- Filesystems -->
+<div class="row g-3 mb-4">
+  <% if (!r.filesystems.length) { %>
+    <div class="col-12"><div class="alert alert-secondary mb-0">Info disk tidak tersedia di sistem ini.</div></div>
+  <% } %>
+  <% r.filesystems.forEach(f => { %>
+  <div class="<%= fsCol %>">
+    <div class="card h-100 <%= f.low ? 'border-danger' : '' %>">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-3">
+          <div class="min-w-0">
+            <div class="fw-semibold"><%= fsLabel(f) %></div>
+            <code class="small text-break-all"><%= f.path %></code>
+          </div>
+          <% if (f.low) { %><span class="badge text-bg-danger flex-shrink-0">Hampir penuh</span><% } else { %><span class="badge text-bg-success flex-shrink-0">Aman</span><% } %>
+        </div>
+        <div class="meter-label"><span>Ruang</span><span><%= fmtBytes(f.usedBytes) %> / <%= fmtBytes(f.totalBytes) %> · sisa <strong><%= fmtBytes(f.freeBytes) %></strong></span></div>
+        <div class="progress meter mb-3" role="progressbar" aria-label="Ruang terpakai" aria-valuenow="<%= f.usedPct %>" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-bar <%= barClass(f.usedPct) %>" style="width: <%= f.usedPct %>%"></div>
+        </div>
+        <% if (f.inodesUsedPct !== null) { %>
+        <div class="meter-label"><span>Inode (jumlah file)</span><span><%= f.inodesUsedPct %>% · sisa <%= fmtNumber(f.inodesFree) %></span></div>
+        <div class="progress meter" role="progressbar" aria-label="Inode terpakai" aria-valuenow="<%= f.inodesUsedPct %>" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-bar <%= barClass(f.inodesUsedPct) %>" style="width: <%= f.inodesUsedPct %>%"></div>
+        </div>
+        <small class="form-hint">ENOSPC juga muncul kalau inode habis walau ruang masih ada — biasanya karena ribuan file kecil.</small>
+        <% } %>
+      </div>
+    </div>
+  </div>
+  <% }) %>
+</div>
+
+<div class="row g-4">
+  <!-- Breakdown -->
+  <div class="col-xl-7">
+    <section class="card h-100">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-pie-chart me-1"></i>Yang memakai ruang</h2></div>
+      <div class="list-group list-group-flush">
+        <div class="list-group-item py-3">
+          <div class="d-flex justify-content-between gap-2">
+            <div class="fw-semibold"><i class="bi bi-window-stack me-1"></i>Profil browser sisa</div>
+            <div class="text-nowrap"><%= r.profiles.partial ? '≥ ' : '' %><%= fmtBytes(r.profiles.bytes) %></div>
+          </div>
+          <div class="small text-body-secondary mt-1">
+            <strong><%= fmtNumber(r.profiles.count) %></strong> folder <code><%= r.profiles.root %>/crawlkomik-*</code>
+            <% if (r.profiles.active) { %>(<%= r.profiles.active %> sedang dipakai browser aktif)<% } %>.
+            Normalnya dihapus begitu browser ditutup; sisa dari crash/restart dibersihkan otomatis tiap 30 menit.
+            <% if (r.profiles.lastSweep) { %>Sweep terakhir <time data-utc="<%= r.profiles.lastSweep.at %>" data-relative><%= new Date(r.profiles.lastSweep.at).toISOString().slice(0, 16).replace('T', ' ') %> UTC</time>, menghapus <%= r.profiles.lastSweep.removed %>.<% } %>
+          </div>
+        </div>
+        <div class="list-group-item py-3">
+          <div class="d-flex justify-content-between gap-2">
+            <div class="fw-semibold"><i class="bi bi-images me-1"></i>Cache gambar</div>
+            <div class="text-nowrap"><%= fmtBytes(r.imageCache.bytes) %></div>
+          </div>
+          <div class="small text-body-secondary mt-1">
+            <strong><%= fmtNumber(r.imageCache.count) %></strong> gambar, disimpan <%= r.imageCache.maxAgeHours %> jam<%= r.imageCache.maxMb ? ', batas ' + fmtBytes(r.imageCache.maxMb * 1048576) : ', tanpa batas ukuran' %>.
+            <a href="#cache">Atur</a>
+          </div>
+        </div>
+        <div class="list-group-item py-3">
+          <div class="d-flex justify-content-between gap-2">
+            <div class="fw-semibold"><i class="bi bi-database me-1"></i>Database</div>
+            <div class="text-nowrap"><%= fmtBytes(r.database.bytes) %></div>
+          </div>
+          <div class="small text-body-secondary mt-1">
+            Termasuk <a href="/admin/logs"><%= fmtNumber(r.database.logCount) %> API log</a> (otomatis dihapus setelah 14 hari).
+            <% if (r.database.preRestoreBytes) { %>Backup sebelum restore: <%= fmtBytes(r.database.preRestoreBytes) %>.<% } %>
+          </div>
+        </div>
+        <div class="list-group-item py-3">
+          <div class="d-flex justify-content-between gap-2">
+            <div class="fw-semibold"><i class="bi bi-file-earmark-zip me-1"></i>File sementara</div>
+            <div class="text-nowrap"><%= fmtBytes(r.temp.uploadBytes + r.temp.backupBytes) %></div>
+          </div>
+          <div class="small text-body-secondary mt-1">
+            <%= r.temp.uploadFiles %> upload restore, <%= r.temp.backupFiles %> snapshot backup. Yang tertinggal lebih dari 1 jam dihapus otomatis.
+          </div>
+        </div>
+      </div>
+      <div class="card-footer small text-body-secondary">
+        <i class="bi bi-info-circle me-1"></i>Di Docker, log container dibatasi lewat <code>docker-compose.yml</code> (3 × 10 MB) — tidak terlihat dari sini.
+      </div>
+    </section>
+  </div>
+
+  <!-- Cleanup + cache settings -->
+  <div class="col-xl-5">
+    <section class="card mb-4">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-stars me-1"></i>Pembersihan otomatis</h2></div>
+      <div class="card-body">
+        <p class="small text-body-secondary mb-2">Berjalan saat server start dan tiap 6 jam: profil browser sisa, gambar kedaluwarsa / melebihi batas, file cache yatim, dan file sementara.</p>
+        <% if (lc) { %>
+          <div class="small">
+            <div class="mb-1">Terakhir: <time data-utc="<%= lc.at %>"><%= new Date(lc.at).toISOString().slice(0, 16).replace('T', ' ') %> UTC</time> (<%= (lc.durationMs / 1000).toFixed(1) %> dtk)</div>
+            <ul class="mb-0 ps-3">
+              <li><%= lc.profiles %> profil browser sisa</li>
+              <li><%= lc.expired %> gambar kedaluwarsa<% if (lc.evicted) { %>, <%= lc.evicted %> dibuang karena batas ukuran<% } %></li>
+              <li><%= lc.orphans %> file cache yatim (<%= fmtBytes(lc.orphanBytes) %>)</li>
+              <li><%= lc.tempFiles %> file sementara</li>
+            </ul>
+          </div>
+        <% } else { %>
+          <p class="small mb-0">Belum ada hasil pembersihan sejak server start.</p>
+        <% } %>
+      </div>
+    </section>
+
+    <section class="card" id="cache">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-images me-1"></i>Cache gambar</h2></div>
+      <div class="card-body">
+        <form method="POST" action="/admin/storage/settings">
+          <div class="row g-3">
+            <div class="col-sm-6">
+              <label class="form-label" for="max_age_hours">Simpan selama (jam)</label>
+              <input type="number" class="form-control" id="max_age_hours" name="max_age_hours" value="<%= r.imageCache.maxAgeHours %>" min="1" max="720" inputmode="numeric">
+              <small class="form-hint">1–720. Default 24.</small>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="max_mb">Batas ukuran (MB)</label>
+              <input type="number" class="form-control" id="max_mb" name="max_mb" value="<%= r.imageCache.maxMb %>" min="0" inputmode="numeric">
+              <small class="form-hint">0 = tanpa batas. Gambar terlama dibuang dulu.</small>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-check-lg me-1"></i>Save</button>
+        </form>
+        <hr>
+        <p class="small text-body-secondary mb-2">Hapus semua gambar yang di-cache (<%= fmtNumber(r.imageCache.count) %>). URL proxy yang sudah dibagikan akan 404 sampai di-crawl ulang.</p>
+        <form method="POST" action="/admin/clear-cache" data-confirm="Hapus SEMUA cache gambar? Tidak bisa dibatalkan.">
+          <button type="submit" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Clear Image Cache</button>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>

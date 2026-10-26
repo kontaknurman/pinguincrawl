@@ -1,0 +1,17 @@
+services:
+  crawlkomik:
+    build: .
+    container_name: crawlkomik
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3000
+    restart: unless-stopped
+    # Docker keeps container output forever by default — cap it so logs can't fill the disk
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

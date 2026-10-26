@@ -1,0 +1,186 @@
+<div class="page-header">
+  <div>
+    <h1>Settings</h1>
+    <p class="page-subtitle">Browser crawler, akses API, keamanan login, dan backup database.</p>
+  </div>
+</div>
+
+<nav class="scroll-x mb-4" aria-label="Bagian settings">
+  <a class="btn btn-sm btn-outline-secondary" href="#crawl"><i class="bi bi-window-stack me-1"></i>Crawl &amp; Browser</a>
+  <a class="btn btn-sm btn-outline-secondary" href="#api"><i class="bi bi-key me-1"></i>Akses API</a>
+  <a class="btn btn-sm btn-outline-secondary" href="#security"><i class="bi bi-shield-lock me-1"></i>Keamanan</a>
+  <a class="btn btn-sm btn-outline-secondary" href="#backup"><i class="bi bi-database me-1"></i>Backup &amp; Restore</a>
+</nav>
+
+<div class="row g-4">
+  <!-- Crawl & browser -->
+  <div class="col-xl-6">
+    <section class="card h-100" id="crawl">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-window-stack me-1"></i>Crawl &amp; Browser</h2></div>
+      <div class="card-body">
+        <form method="POST" action="/admin/crawl-settings">
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label" for="max_browsers">Max concurrent browsers</label>
+              <input type="number" class="form-control" id="max_browsers" name="max_browsers" value="<%= maxBrowsers %>" min="1" max="50" inputmode="numeric">
+              <small class="form-hint">Jumlah browser Puppeteer yang boleh jalan bersamaan (1–50). Terlalu banyak bisa menyebabkan OOM.</small>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="retry_count">Retry count</label>
+              <input type="number" class="form-control" id="retry_count" name="retry_count" value="<%= retryCount %>" min="0" max="5" inputmode="numeric">
+              <small class="form-hint">0 = mati, maksimal 5.</small>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="retry_delay">Retry delay (ms)</label>
+              <input type="number" class="form-control" id="retry_delay" name="retry_delay" value="<%= retryDelay %>" min="500" max="30000" step="500" inputmode="numeric">
+            </div>
+            <div class="col-12">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch" id="browser_headless" name="browser_headless" <%= browserHeadless ? 'checked' : '' %>>
+                <label class="form-check-label" for="browser_headless">Headless browser</label>
+              </div>
+              <small class="form-hint">Matikan (headful) jika Cloudflare terus reload/loop walau CAPTCHA sudah di-solve. Di Docker butuh Xvfb (sudah otomatis).</small>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-check-lg me-1"></i>Save Crawl Settings</button>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <!-- API access -->
+  <div class="col-xl-6">
+    <section class="card h-100" id="api">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-key me-1"></i>Akses API</h2></div>
+      <div class="card-body">
+        <form method="POST" action="/admin/api-key" class="mb-4">
+          <label class="form-label" for="api_key">API key</label>
+          <div class="input-group">
+            <input type="text" class="form-control font-monospace" id="api_key" name="api_key" value="<%= apiKey %>" placeholder="Kosong = akses terbuka" autocomplete="off" spellcheck="false">
+            <button class="btn btn-outline-secondary" type="button" id="btnGenKey" title="Buat key acak"><i class="bi bi-shuffle"></i><span class="d-none d-sm-inline ms-1">Generate</span></button>
+            <button class="btn btn-outline-secondary" type="button" data-copy-target="#api_key" title="Copy" aria-label="Copy API key"><i class="bi bi-clipboard"></i></button>
+          </div>
+          <small class="form-hint">Melindungi semua endpoint <code>/api/*</code>. Kirim lewat <code>?api_key=…</code> atau header <code>X-API-Key</code>. Kosongkan untuk akses terbuka.</small>
+          <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-check-lg me-1"></i>Save API Key</button>
+        </form>
+
+        <form method="POST" action="/admin/ip-whitelist">
+          <label class="form-label" for="ip_whitelist">IP whitelist</label>
+          <textarea class="form-control font-monospace" id="ip_whitelist" name="ip_whitelist" rows="2" placeholder="mis. 192.168.1.100, 10.0.0.1"><%= ipWhitelist %></textarea>
+          <small class="form-hint">
+            Batasi akses API ke IP tertentu, pisahkan dengan koma. Kosong = semua IP boleh.
+            <% if (clientIp) { %>IP kamu saat ini: <code><%= clientIp %></code> <a href="#" data-copy="<%= clientIp %>" class="ms-1">copy</a>.<% } %>
+          </small>
+          <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-check-lg me-1"></i>Save IP Whitelist</button>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <!-- Security -->
+  <div class="col-12">
+    <section class="card" id="security">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-shield-lock me-1"></i>Keamanan</h2></div>
+      <div class="card-body">
+        <div class="row g-4">
+          <div class="col-lg-6">
+            <h3 class="h6">Change password</h3>
+            <% if (isDefaultPassword) { %>
+              <div class="alert alert-warning py-2 small"><i class="bi bi-exclamation-triangle me-1"></i>Password masih default (<code>admin</code>) — segera ganti.</div>
+            <% } %>
+            <% if (pwError) { %><div class="alert alert-danger py-2 small"><%= pwError %></div><% } %>
+            <form method="POST" action="/admin/change-password">
+              <div class="mb-2">
+                <label class="form-label small" for="current_password">Current password</label>
+                <div class="input-group">
+                  <input type="password" class="form-control" id="current_password" name="current_password" required autocomplete="current-password">
+                  <button class="btn btn-outline-secondary" type="button" data-toggle-password="#current_password" aria-label="Tampilkan password"><i class="bi bi-eye"></i></button>
+                </div>
+              </div>
+              <div class="row g-2 mb-3">
+                <div class="col-sm-6">
+                  <label class="form-label small" for="new_password">New password</label>
+                  <input type="password" class="form-control" id="new_password" name="new_password" required minlength="4" autocomplete="new-password">
+                </div>
+                <div class="col-sm-6">
+                  <label class="form-label small" for="confirm_password">Confirm password</label>
+                  <input type="password" class="form-control" id="confirm_password" name="confirm_password" required minlength="4" autocomplete="new-password">
+                </div>
+              </div>
+              <button type="submit" class="btn btn-warning"><i class="bi bi-key me-1"></i>Change Password</button>
+            </form>
+          </div>
+
+          <div class="col-lg-6">
+            <h3 class="h6">Two-factor auth (2FA)</h3>
+            <% if (totpError) { %><div class="alert alert-danger py-2 small"><%= totpError %></div><% } %>
+            <% if (totpEnabled) { %>
+              <p class="small text-body-secondary"><span class="badge text-bg-success me-1">Aktif</span>Kode Google Authenticator diminta setiap login.</p>
+              <form method="POST" action="/admin/2fa/disable" data-confirm="Matikan 2FA? Login tidak lagi meminta kode authenticator.">
+                <div class="input-group mb-2">
+                  <input type="password" class="form-control" name="current_password" placeholder="Password untuk mematikan" required autocomplete="current-password" aria-label="Password">
+                  <button type="submit" class="btn btn-outline-danger">Disable 2FA</button>
+                </div>
+              </form>
+            <% } else { %>
+              <p class="small text-body-secondary"><span class="badge text-bg-secondary me-1">Nonaktif</span>Tambahkan Google Authenticator (atau aplikasi TOTP lain) untuk keamanan ekstra.</p>
+              <a href="/admin/2fa/setup" class="btn btn-outline-info"><i class="bi bi-shield-lock me-1"></i>Setup 2FA</a>
+            <% } %>
+
+            <hr class="my-4">
+            <h3 class="h6">Sesi login</h3>
+            <p class="small text-body-secondary">Keluarkan semua perangkat yang sedang login (termasuk perangkat ini).</p>
+            <form method="POST" action="/admin/logout-all" data-confirm="Logout dari SEMUA perangkat? Kamu akan diarahkan ke halaman login.">
+              <button type="submit" class="btn btn-outline-warning"><i class="bi bi-box-arrow-right me-1"></i>Logout All Devices</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Backup & restore -->
+  <div class="col-12">
+    <section class="card" id="backup">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-database me-1"></i>Backup &amp; Restore</h2></div>
+      <div class="card-body">
+        <% if (backupError) { %><div class="alert alert-danger py-2 small"><%= backupError %></div><% } %>
+        <div class="row g-4">
+          <div class="col-lg-6">
+            <h3 class="h6">Download backup</h3>
+            <p class="small text-body-secondary">File SQLite berisi semua website, page config, dan settings.</p>
+            <a href="/admin/backup" class="btn btn-outline-info"><i class="bi bi-download me-1"></i>Download Backup</a>
+          </div>
+          <div class="col-lg-6">
+            <h3 class="h6">Restore</h3>
+            <p class="small text-body-secondary">Upload file backup <code>.db</code>. Database saat ini otomatis di-backup dulu (<code>.pre-restore</code>).</p>
+            <form method="POST" action="/admin/restore" enctype="multipart/form-data" data-confirm="Restore database? Data saat ini akan diganti.">
+              <div class="input-group">
+                <input type="file" class="form-control" name="dbfile" accept=".db,.sqlite,.sqlite3" required aria-label="File backup">
+                <button type="submit" class="btn btn-outline-warning"><i class="bi bi-upload me-1"></i>Restore</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  const gen = document.getElementById('btnGenKey');
+  if (gen) gen.addEventListener('click', () => {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const input = document.getElementById('api_key');
+    input.value = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    input.focus();
+    if (window.ck) ck.toast('Key baru dibuat — klik Save API Key untuk menyimpan', 'info');
+  });
+  <% if (focusSection) { %>
+  const target = document.getElementById(<%- JSON.stringify(focusSection) %>);
+  if (target) target.scrollIntoView({ block: 'start' });
+  <% } %>
+})();
+</script>

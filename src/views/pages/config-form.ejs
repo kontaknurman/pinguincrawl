@@ -1,0 +1,839 @@
+<%
+  const _defaultTypes = ['katalog', 'komik_detail', 'chapter_list', 'chapter'];
+  const _isCustomType = typeof isCustomType !== 'undefined' && isCustomType;
+  const _error = typeof error !== 'undefined' ? error : null;
+  const _raw = typeof rawJson !== 'undefined' && rawJson ? rawJson : {};
+  const jsOff = !!(config && config.use_js === 0);
+  const endpointMap = { katalog: '/api/katalog', komik_detail: '/api/komik', chapter_list: '/api/chapters', chapter: '/api/chapter' };
+  const endpoint = endpointMap[pageType] || '/api/custom/' + pageType;
+  // JSON for inline <script>: escape "<" so a value can never close the script tag
+  const js = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
+  const reqSwitch = (name) => `<div class="form-check form-switch mb-0 ms-auto">
+      <input class="form-check-input" type="checkbox" name="req_${name}" id="req_${name}" ${selectorsRequired[name] ? 'checked' : ''}>
+      <label class="form-check-label small text-warning-emphasis" for="req_${name}">Req</label>
+    </div>`;
+%>
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="/admin">Dashboard</a></li>
+    <li class="breadcrumb-item"><a href="/admin/websites/<%= website.id %>"><%= website.name %></a></li>
+    <li class="breadcrumb-item active" aria-current="page"><%= pageType %></li>
+  </ol>
+</nav>
+
+<div class="page-header mb-2">
+  <div class="min-w-0">
+    <h1 class="text-break"><%= website.name %> <span class="text-body-secondary fw-normal">/</span> <%= pageType %></h1>
+    <p class="page-subtitle"><%= _isCustomType ? 'Custom page type' : 'Page config' %> · <code><%= endpoint %></code></p>
+  </div>
+</div>
+
+<nav class="scroll-x mb-3" aria-label="Page type">
+  <% pageTypes.forEach(pt => { %>
+    <a href="/admin/websites/<%= website.id %>/config/<%= pt %>"
+       class="btn btn-sm <%= pt === pageType ? 'btn-primary' : (_defaultTypes.includes(pt) ? 'btn-outline-secondary' : 'btn-outline-info') %>"
+       <%- pt === pageType ? 'aria-current="page"' : '' %>><%= pt %></a>
+  <% }) %>
+</nav>
+
+<% if (_error) { %>
+  <div class="alert alert-danger"><i class="bi bi-exclamation-octagon me-1"></i><%= _error %></div>
+<% } %>
+
+<!-- Quick test against the SAVED config (outside the main form: forms can't nest) -->
+<div class="card mb-4">
+  <div class="card-body py-3">
+    <form id="testApiForm" class="row g-2 align-items-center" autocomplete="off">
+      <div class="col-12 col-md">
+        <label class="visually-hidden" for="testUrl">URL halaman untuk diuji</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-play-circle"></i></span>
+          <input type="url" class="form-control" id="testUrl" placeholder="URL halaman <%= pageType %> untuk diuji…" required inputmode="url">
+        </div>
+      </div>
+      <div class="col-12 col-md-auto d-flex gap-2 align-items-center">
+        <div class="form-check form-switch mb-0 me-1">
+          <input class="form-check-input" type="checkbox" id="testHtml">
+          <label class="form-check-label small" for="testHtml">+HTML</label>
+        </div>
+        <button type="submit" class="btn btn-outline-success flex-grow-1"><i class="bi bi-box-arrow-up-right me-1"></i>Uji API</button>
+      </div>
+    </form>
+    <small class="form-hint">Membuka <code><%= endpoint %>?website=<%= website.name %>&amp;url=…</code> di tab baru memakai config yang <strong>sudah tersimpan</strong>.</small>
+  </div>
+</div>
+
+<form method="POST" action="/admin/websites/<%= website.id %>/config/<%= pageType %>" id="configForm" data-dirty-guard>
+
+  <% if (_isCustomType) { %>
+  <div class="alert alert-info">
+    <i class="bi bi-info-circle me-1"></i>
+    <strong>Custom Page Type</strong> — data diambil sepenuhnya lewat <strong>Custom Response Fields</strong> di bawah.
+    API endpoint: <code class="text-break-all">/api/custom/<%= pageType %>?website=<%= website.name %>&amp;url=...</code>
+  </div>
+  <% } %>
+
+  <!-- SELECTORS (hidden for custom types) -->
+  <% if (!_isCustomType) { %>
+  <section class="card mb-4">
+    <div class="card-header"><h2 class="section-title"><i class="bi bi-crosshair me-1"></i>CSS Selectors</h2></div>
+    <div class="card-body">
+      <p class="small text-body-secondary">Selector CSS untuk mengambil data. Aktifkan <span class="badge text-bg-warning">Req</span> supaya field wajib — API mengembalikan error kalau hasilnya kosong.</p>
+      <details class="small text-body-secondary mb-3">
+        <summary>Tip: ekstraksi kompleks dengan prefix <code>js:</code></summary>
+        <p class="mt-2 mb-0">Kalau CSS selector tidak cukup, pakai <code>js:</code> diikuti JavaScript expression yang me-return value. Contoh:
+        <code class="text-break">js:(() =&gt; { const rows = document.querySelectorAll('tr'); const r = Array.from(rows).find(r =&gt; r.querySelector('td')?.textContent.trim() === 'Status:'); return r?.querySelectorAll('td')[1]?.textContent.trim() })()</code></p>
+      </details>
+
+      <% if (pageType === 'katalog') { %>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_item">Manga Item <code>item</code></label>
+              <%- reqSwitch('item') %>
+            </div>
+            <input type="text" id="sel_item" name="sel_item" class="form-control font-monospace" value="<%= selectors.item || '' %>" placeholder=".bs .bsx a" spellcheck="false">
+            <small class="form-hint">Selector untuk tiap link manga di listing</small>
+          </div>
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_title">Title inside Item <code>title</code></label>
+              <%- reqSwitch('title') %>
+            </div>
+            <input type="text" id="sel_title" name="sel_title" class="form-control font-monospace" value="<%= selectors.title || '' %>" placeholder=".tt" spellcheck="false">
+            <small class="form-hint">Selector judul di dalam tiap item</small>
+          </div>
+        </div>
+
+      <% } else if (pageType === 'komik_detail') { %>
+        <div class="row g-3">
+          <% ['title', 'genres', 'status', 'type', 'author', 'released', 'sinopsis', 'image'].forEach(function(name) {
+            var labels = { title: 'Title', genres: 'Genres', status: 'Status', type: 'Type', author: 'Author', released: 'Released', sinopsis: 'Sinopsis', image: 'Cover Image' };
+            var placeholders = { title: 'h1[itemprop="name"]', genres: 'a[itemprop="genre"]', status: '.imptdt i', type: '.imptdt a', author: '.fmed span', released: '.fmed span', sinopsis: '[itemprop="description"]', image: 'img.wp-post-image' };
+          %>
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_<%= name %>"><%= labels[name] %> <code><%= name %></code></label>
+              <%- reqSwitch(name) %>
+            </div>
+            <input type="text" id="sel_<%= name %>" name="sel_<%= name %>" class="form-control font-monospace" value="<%= selectors[name] || '' %>" placeholder="<%= placeholders[name] %>" spellcheck="false">
+          </div>
+          <% }) %>
+        </div>
+
+      <% } else if (pageType === 'chapter_list') { %>
+        <div class="row g-3">
+          <div class="col-12">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_chapter_link">Chapter Links <code>chapter_link</code></label>
+              <%- reqSwitch('chapter_link') %>
+            </div>
+            <input type="text" id="sel_chapter_link" name="sel_chapter_link" class="form-control font-monospace" value="<%= selectors.chapter_link || '' %>" placeholder=".eph-num a" spellcheck="false">
+            <small class="form-hint">Selector untuk semua link &lt;a&gt; chapter</small>
+          </div>
+        </div>
+
+      <% } else if (pageType === 'chapter') { %>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_title">Chapter Title <code>title</code></label>
+              <%- reqSwitch('title') %>
+            </div>
+            <input type="text" id="sel_title" name="sel_title" class="form-control font-monospace" value="<%= selectors.title || '' %>" placeholder="h1.entry-title" spellcheck="false">
+          </div>
+          <div class="col-md-6">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_chapter_number">Chapter Number <code>chapter_number</code></label>
+              <%- reqSwitch('chapter_number') %>
+            </div>
+            <input type="text" id="sel_chapter_number" name="sel_chapter_number" class="form-control font-monospace" value="<%= selectors.chapter_number || '' %>" placeholder=".chpnumber, select option:checked" spellcheck="false">
+            <small class="form-hint">Selector elemen nomor chapter</small>
+          </div>
+          <div class="col-12">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <label class="form-label mb-0" for="sel_images">Images <code>images</code></label>
+              <%- reqSwitch('images') %>
+            </div>
+            <input type="text" id="sel_images" name="sel_images" class="form-control font-monospace" value="<%= selectors.images || '' %>" placeholder="#readerarea img" spellcheck="false">
+            <small class="form-hint">Selector semua gambar halaman chapter. Reader berbasis &lt;canvas&gt;? Lihat canvas.md.</small>
+          </div>
+        </div>
+      <% } %>
+    </div>
+  </section>
+  <% } %>
+
+  <!-- RENDER MODE -->
+  <section class="card mb-4">
+    <div class="card-header"><h2 class="section-title"><i class="bi bi-cpu me-1"></i>Render Mode</h2></div>
+    <div class="card-body">
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" role="switch" name="use_js" id="useJs" <%= jsOff ? '' : 'checked' %> onchange="toggleJsSections()">
+        <label class="form-check-label fw-semibold" for="useJs">Puppeteer JS Rendering</label>
+      </div>
+      <p class="small text-body-secondary mb-0" id="jsOnNote" style="<%= jsOff ? 'display:none' : '' %>">
+        Menggunakan Puppeteer (Chromium) untuk render JavaScript penuh. Mendukung wait, scroll, actions, custom JS, Cloudflare bypass.
+      </p>
+      <p class="small text-body-secondary mb-0" id="jsOffNote" style="<%= jsOff ? '' : 'display:none' %>">
+        Menggunakan HTTP request biasa (seperti CURL). Lebih cepat dan ringan, tapi tidak bisa render JavaScript, bypass Cloudflare, atau menjalankan actions. Proxy tidak didukung di mode ini.
+      </p>
+    </div>
+  </section>
+
+  <!-- WAIT / SCROLL / PAGE OPTIONS (only visible when JS enabled) -->
+  <section class="card mb-4 js-only-section" style="<%= jsOff ? 'display:none' : '' %>">
+    <div class="card-header"><h2 class="section-title"><i class="bi bi-hourglass-split me-1"></i>Wait, Scroll &amp; Page Options</h2></div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-6 col-xl-4">
+          <label class="form-label" for="wait_for">Wait For Selector</label>
+          <input type="text" id="wait_for" name="wait_for" class="form-control font-monospace" value="<%= config ? (config.wait_for || '') : '' %>" placeholder="CSS selector yang ditunggu" spellcheck="false">
+          <small class="form-hint">Tunggu elemen ini muncul sebelum scraping</small>
+        </div>
+        <div class="col-md-6 col-xl-4">
+          <label class="form-label" for="wait_timeout">Wait Timeout (ms)</label>
+          <input type="number" id="wait_timeout" name="wait_timeout" class="form-control" value="<%= config ? config.wait_timeout : 30000 %>" min="1000" max="120000" inputmode="numeric">
+        </div>
+        <div class="col-md-6 col-xl-4">
+          <label class="form-label" for="use_proxy"><i class="bi bi-shield-lock me-1"></i>Proxy</label>
+          <select id="use_proxy" name="use_proxy" class="form-select">
+            <option value="0" <%= (!config || !config.use_proxy) ? 'selected' : '' %>>Default (ikut website)</option>
+            <option value="1" <%= config && config.use_proxy == 1 ? 'selected' : '' %>>Force ON</option>
+            <option value="2" <%= config && config.use_proxy == 2 ? 'selected' : '' %>>Force OFF</option>
+          </select>
+          <small class="form-hint">Override setelan proxy website untuk page type ini.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" name="scroll_to_bottom" id="scrollBottom" <%= config && config.scroll_to_bottom ? 'checked' : '' %>>
+            <label class="form-check-label" for="scrollBottom">Scroll to bottom before scraping</label>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" name="block_images" id="blockImages" <%= config && config.block_images ? 'checked' : '' %>>
+            <label class="form-check-label" for="blockImages"><i class="bi bi-image me-1"></i>Block Image Loading</label>
+          </div>
+          <small class="form-hint">Lewati loading gambar supaya lebih cepat. Jangan aktifkan untuk chapter yang butuh cache gambar.</small>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACTIONS (only visible when JS enabled) -->
+  <section class="card mb-4 js-only-section" style="<%= jsOff ? 'display:none' : '' %>">
+    <div class="card-header d-flex flex-wrap gap-2 justify-content-between align-items-center">
+      <h2 class="section-title"><i class="bi bi-lightning me-1"></i>Actions <small class="text-body-secondary fw-normal">(pre-scrape steps)</small></h2>
+      <button type="button" class="btn btn-sm btn-outline-primary" onclick="addAction()"><i class="bi bi-plus-lg me-1"></i>Add Action</button>
+    </div>
+    <div class="card-body">
+      <p class="small text-body-secondary mb-3">Langkah sebelum scraping, dijalankan berurutan: klik tombol, tunggu konten, scroll, ketik teks, dll. Urutkan dengan drag atau tombol panah.</p>
+
+      <div id="actions-visual" class="mb-3"></div>
+
+      <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+        <label class="form-label small mb-0" for="actionsJson">Actions JSON <span class="text-body-secondary">(otomatis dari editor di atas, atau edit langsung)</span></label>
+        <span class="d-flex gap-2 align-items-center flex-shrink-0">
+          <span class="json-status badge" data-json-status-for="actionsJson"></span>
+          <button type="button" class="btn btn-sm btn-link p-0" data-json-format="actionsJson">Rapikan</button>
+        </span>
+      </div>
+      <textarea name="actions_json" id="actionsJson" class="form-control font-monospace" rows="6" data-json="array" spellcheck="false"><%= _raw.actions != null ? _raw.actions : JSON.stringify(actions, null, 2) %></textarea>
+
+      <details class="mt-3 small">
+        <summary>Action types reference</summary>
+        <div class="table-responsive mt-2">
+          <table class="table table-sm mb-0">
+            <thead><tr><th>Type</th><th>Fields</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>wait</code></td><td>value (ms)</td><td>Wait/delay in milliseconds</td></tr>
+              <tr><td><code>wait_selector</code></td><td>selector, timeout</td><td>Wait for a CSS selector to appear</td></tr>
+              <tr><td><code>click</code></td><td>selector, delay</td><td>Click an element, optional delay after</td></tr>
+              <tr><td><code>scroll_to_bottom</code></td><td>-</td><td>Auto-scroll to page bottom</td></tr>
+              <tr><td><code>scroll_by</code></td><td>value (px), delay</td><td>Scroll down by N pixels</td></tr>
+              <tr><td><code>type</code></td><td>selector, value, delay</td><td>Type text into input field</td></tr>
+              <tr><td><code>select</code></td><td>selector, value</td><td>Select dropdown option</td></tr>
+              <tr><td><code>evaluate</code></td><td>value (JS code)</td><td>Run custom JavaScript on page</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- CUSTOM FIELDS (additional JSON response fields) -->
+  <section class="card mb-4">
+    <div class="card-header d-flex flex-wrap gap-2 justify-content-between align-items-center">
+      <h2 class="section-title"><i class="bi bi-braces me-1"></i>Custom Response Fields</h2>
+      <button type="button" class="btn btn-sm btn-outline-primary" onclick="addCustomField()"><i class="bi bi-plus-lg me-1"></i>Add Field</button>
+    </div>
+    <div class="card-body">
+      <p class="small text-body-secondary mb-3">
+        Field tambahan di JSON response API, di-merge tanpa mengubah field default.
+        Tipe: <code>string</code> (satu nilai), <code>array</code> (banyak nilai), <code>object_array</code> (array object dengan sub-field).
+      </p>
+
+      <div id="custom-fields-visual" class="mb-3"></div>
+
+      <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+        <label class="form-label small mb-0" for="customFieldsJson">Custom Fields JSON <span class="text-body-secondary">(otomatis, atau edit langsung)</span></label>
+        <span class="d-flex gap-2 align-items-center flex-shrink-0">
+          <span class="json-status badge" data-json-status-for="customFieldsJson"></span>
+          <button type="button" class="btn btn-sm btn-link p-0" data-json-format="customFieldsJson">Rapikan</button>
+        </span>
+      </div>
+      <textarea name="custom_fields_json" id="customFieldsJson" class="form-control font-monospace" rows="8" data-json="array" spellcheck="false"><%= _raw.customFields != null ? _raw.customFields : JSON.stringify(typeof customFields !== 'undefined' ? customFields : [], null, 2) %></textarea>
+
+      <details class="mt-3 small">
+        <summary>Examples &amp; reference</summary>
+        <div class="mt-2">
+          <p class="mb-1"><strong>String field</strong> — satu nilai teks:</p>
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-3">{ "key": "rating", "selector": ".rating-value", "type": "string" }</pre>
+
+          <p class="mb-1"><strong>String field with attribute</strong> — ambil attribute elemen:</p>
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-3">{ "key": "cover_url", "selector": "img.cover", "type": "string", "attr": "src" }</pre>
+
+          <p class="mb-1"><strong>Array field</strong> — banyak nilai:</p>
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-3">{ "key": "tags", "selector": ".tag-item", "type": "array" }</pre>
+
+          <p class="mb-1"><strong>Object Array field</strong> — array object dengan sub-field:</p>
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-3">{
+  "key": "related_manga",
+  "selector": ".related-item",
+  "type": "object_array",
+  "fields": [
+    { "key": "title", "selector": ".title" },
+    { "key": "url", "selector": "a", "attr": "href" },
+    { "key": "image", "selector": "img", "attr": "src" }
+  ]
+}</pre>
+
+          <p class="mb-1"><strong>Pakai prefix js:</strong> — ekstraksi kompleks:</p>
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-3">{ "key": "total_pages", "selector": "js:document.querySelectorAll('.page').length", "type": "string" }</pre>
+
+          <p class="mb-1"><strong>Sub-field bertipe array</strong> — array di dalam object_array:</p>
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-3">{
+  "key": "categories",
+  "selector": ".category-group",
+  "type": "object_array",
+  "fields": [
+    { "key": "name", "selector": "h3" },
+    { "key": "items", "selector": ".item", "type": "array" }
+  ]
+}</pre>
+
+          <div class="table-responsive">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Key</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>key</code></td><td>Nama field di JSON response (harus unik, jangan pakai nama field default)</td></tr>
+                <tr><td><code>selector</code></td><td>CSS selector atau <code>js:</code> expression</td></tr>
+                <tr><td><code>type</code></td><td><code>string</code> | <code>array</code> | <code>object_array</code></td></tr>
+                <tr><td><code>attr</code></td><td>Opsional: ambil attribute elemen (mis. <code>href</code>, <code>src</code>, <code>data-id</code>)</td></tr>
+                <tr><td><code>image</code></td><td>Opsional (<code>true</code>): paksa nilai lewat Image Proxy/Cache. URL berakhiran <code>.jpg/.png/.webp</code> dll otomatis di-proxy tanpa flag ini — pakai flag untuk URL CDN tanpa ekstensi. Perlu "Enable Image Proxy" aktif di website.</td></tr>
+                <tr><td><code>fields</code></td><td>Hanya untuk <code>object_array</code>: daftar definisi sub-field</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- REGEX REPLACE -->
+  <section class="card mb-4">
+    <div class="card-header d-flex flex-wrap gap-2 justify-content-between align-items-center">
+      <h2 class="section-title"><i class="bi bi-regex me-1"></i>Regex Replace <small class="text-body-secondary fw-normal">(post-scrape)</small></h2>
+      <button type="button" class="btn btn-sm btn-outline-primary" onclick="addRegexRule()"><i class="bi bi-plus-lg me-1"></i>Add Rule</button>
+    </div>
+    <div class="card-body">
+      <p class="small text-body-secondary mb-3">
+        Ubah teks hasil ekstraksi sebelum dikirim di API. Tiap rule: <code>field</code> (nama field atau <code>*</code> untuk semua), <code>pattern</code> (regex), <code>replacement</code>, <code>flags</code>.
+      </p>
+
+      <div id="regex-rules-visual" class="mb-3"></div>
+
+      <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+        <label class="form-label small mb-0" for="regexReplaceJson">Regex Replace JSON <span class="text-body-secondary">(otomatis, atau edit langsung)</span></label>
+        <span class="d-flex gap-2 align-items-center flex-shrink-0">
+          <span class="json-status badge" data-json-status-for="regexReplaceJson"></span>
+          <button type="button" class="btn btn-sm btn-link p-0" data-json-format="regexReplaceJson">Rapikan</button>
+        </span>
+      </div>
+      <textarea name="regex_replace_json" id="regexReplaceJson" class="form-control font-monospace" rows="6" data-json="array" spellcheck="false"><%= _raw.regex != null ? _raw.regex : JSON.stringify(regexRules, null, 2) %></textarea>
+
+      <details class="mt-3 small">
+        <summary>Examples &amp; reference</summary>
+        <div class="mt-2">
+          <pre class="json-preview bg-body-tertiary border rounded p-2 mb-2">[
+  { "field": "title", "pattern": "&#8217;", "replacement": "'", "flags": "g" },
+  { "field": "title", "pattern": "\\s+Bahasa Indonesia$", "replacement": "", "flags": "gi" },
+  { "field": "*", "pattern": "\\n+", "replacement": " ", "flags": "g" }
+]</pre>
+          <div class="table-responsive">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Key</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>field</code></td><td>Nama field (<code>title</code>, <code>author</code>, <code>genres</code>, dll) atau <code>*</code> untuk semua field string</td></tr>
+                <tr><td><code>pattern</code></td><td>Regex pattern (backslash ditulis ganda di JSON)</td></tr>
+                <tr><td><code>replacement</code></td><td>String pengganti (kosong <code>""</code> = hapus)</td></tr>
+                <tr><td><code>flags</code></td><td>Regex flags: <code>g</code> (global), <code>i</code> (case-insensitive), <code>gi</code>, dll.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- CUSTOM JS (only visible when JS enabled) -->
+  <section class="card mb-4 js-only-section" style="<%= jsOff ? 'display:none' : '' %>">
+    <div class="card-header"><h2 class="section-title"><i class="bi bi-code-slash me-1"></i>Custom JavaScript <small class="text-body-secondary fw-normal">(opsional)</small></h2></div>
+    <div class="card-body">
+      <textarea name="custom_js" class="form-control font-monospace" rows="5" spellcheck="false" aria-label="Custom JavaScript" placeholder="// Dijalankan setelah halaman load dan actions, sebelum scraping"><%= config ? (config.custom_js || '') : '' %></textarea>
+      <small class="form-hint">Di-evaluate di halaman sebelum ekstraksi data. Reader berbasis &lt;canvas&gt;: lihat snippet di canvas.md.</small>
+    </div>
+  </section>
+
+  <div class="sticky-actions">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>Save Config</button>
+    <a href="/admin/websites/<%= website.id %>" class="btn btn-outline-secondary">Back to Website</a>
+    <span class="dirty-note ms-auto"><i class="bi bi-circle-fill me-1" style="font-size:.5rem"></i>Ada perubahan yang belum disimpan</span>
+  </div>
+</form>
+
+<script>
+// ---- Quick API test (uses the saved config) ----
+(function () {
+  const form = document.getElementById('testApiForm');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const url = document.getElementById('testUrl').value.trim();
+    if (!url) return;
+    const params = new URLSearchParams({ website: <%- js(website.name) %>, url });
+    if (document.getElementById('testHtml').checked) params.set('html', 'true');
+    const key = <%- js(apiKey || '') %>;
+    if (key) params.set('api_key', key);
+    if (document.getElementById('configForm').classList.contains('is-dirty') && window.ck) {
+      ck.toast('Perubahan belum disimpan — uji API memakai config yang tersimpan', 'warning');
+    }
+    window.open(<%- js(endpoint) %> + '?' + params.toString(), '_blank', 'noopener');
+  });
+})();
+
+const ACTION_TYPES = ['wait','wait_selector','click','scroll_to_bottom','scroll_by','type','select','evaluate'];
+
+function escapeAttr(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Write a visual editor's state back to its JSON textarea. 'change' (not 'input') so the
+// textarea's own input listener doesn't re-render the editor mid-edit; it still updates
+// the JSON badge and marks the form as having unsaved changes.
+function writeJson(id, arr) {
+  const el = document.getElementById(id);
+  el.value = JSON.stringify(arr, null, 2);
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function getActions() {
+  try { return JSON.parse(document.getElementById('actionsJson').value) || []; } catch { return []; }
+}
+
+function setActions(arr) {
+  writeJson('actionsJson', arr);
+}
+
+let dragSrcIndex = null;
+
+function renderActions() {
+  const actions = getActions();
+  const container = document.getElementById('actions-visual');
+  container.innerHTML = '';
+  if (!actions.length) {
+    container.innerHTML = '<div class="small text-body-secondary">Belum ada action.</div>';
+    return;
+  }
+  actions.forEach((a, i) => {
+    const div = document.createElement('div');
+    div.className = 'action-item d-flex align-items-start gap-2';
+    div.draggable = true;
+    div.dataset.index = i;
+    div.innerHTML = `
+      <div class="d-flex flex-column align-items-center gap-1 pt-1">
+        <i class="bi bi-grip-vertical drag-handle d-none d-md-inline" title="Drag to reorder"></i>
+        <span class="badge text-bg-secondary">${i + 1}</span>
+        <button type="button" class="btn btn-sm btn-link text-body-secondary p-0" onclick="moveAction(${i},-1)" title="Move up" aria-label="Move up" ${i===0?'disabled':''}><i class="bi bi-chevron-up"></i></button>
+        <button type="button" class="btn btn-sm btn-link text-body-secondary p-0" onclick="moveAction(${i},1)" title="Move down" aria-label="Move down" ${i===actions.length-1?'disabled':''}><i class="bi bi-chevron-down"></i></button>
+      </div>
+      <div class="flex-grow-1 min-w-0">
+        <div class="row g-2 align-items-end">
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Type</label>
+            <select class="form-select form-select-sm" onchange="updateAction(${i},'type',this.value)">
+              ${ACTION_TYPES.map(t => `<option value="${t}" ${t===a.type?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Selector</label>
+            <input type="text" class="form-control form-control-sm font-monospace" placeholder="selector" value="${escapeAttr(a.selector)}" onchange="updateAction(${i},'selector',this.value)" spellcheck="false">
+          </div>
+          <div class="col-6 col-md-3">
+            <label class="form-label small mb-0">Value</label>
+            <input type="text" class="form-control form-control-sm font-monospace" placeholder="value" value="${escapeAttr(a.value)}" onchange="updateAction(${i},'value',this.value)" spellcheck="false">
+          </div>
+          <div class="col-4 col-md-2">
+            <label class="form-label small mb-0">Delay</label>
+            <input type="number" class="form-control form-control-sm" placeholder="ms" value="${escapeAttr(a.delay)}" onchange="updateAction(${i},'delay',parseInt(this.value)||undefined)" inputmode="numeric">
+          </div>
+          <div class="col-2 col-md-1 text-end">
+            <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeAction(${i})" title="Remove" aria-label="Remove action ${i + 1}"><i class="bi bi-trash"></i></button>
+          </div>
+        </div>
+      </div>`;
+
+    // Drag events
+    div.addEventListener('dragstart', (e) => {
+      dragSrcIndex = i;
+      div.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    div.addEventListener('dragend', () => {
+      div.classList.remove('dragging');
+      container.querySelectorAll('.action-item').forEach(el => el.classList.remove('drag-over'));
+    });
+    div.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      div.classList.add('drag-over');
+    });
+    div.addEventListener('dragleave', () => {
+      div.classList.remove('drag-over');
+    });
+    div.addEventListener('drop', (e) => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      if (dragSrcIndex !== null && dragSrcIndex !== i) {
+        moveActionTo(dragSrcIndex, i);
+      }
+      dragSrcIndex = null;
+    });
+
+    container.appendChild(div);
+  });
+}
+
+function moveAction(from, direction) {
+  const to = from + direction;
+  const actions = getActions();
+  if (to < 0 || to >= actions.length) return;
+  const [item] = actions.splice(from, 1);
+  actions.splice(to, 0, item);
+  setActions(actions);
+  renderActions();
+}
+
+function moveActionTo(from, to) {
+  const actions = getActions();
+  const [item] = actions.splice(from, 1);
+  actions.splice(to, 0, item);
+  setActions(actions);
+  renderActions();
+}
+
+function addAction() {
+  const actions = getActions();
+  actions.push({ type: 'wait', value: 1000 });
+  setActions(actions);
+  renderActions();
+}
+
+function removeAction(i) {
+  const actions = getActions();
+  actions.splice(i, 1);
+  setActions(actions);
+  renderActions();
+}
+
+function updateAction(i, field, val) {
+  const actions = getActions();
+  if (val === '' || val === undefined) { delete actions[i][field]; } else {
+    if (field === 'value' && !isNaN(val) && actions[i].type !== 'evaluate' && actions[i].type !== 'type') val = Number(val);
+    actions[i][field] = val;
+  }
+  setActions(actions);
+}
+
+// Sync visual when JSON textarea changes
+document.getElementById('actionsJson').addEventListener('input', () => { renderActions(); });
+
+// Toggle JS-only sections visibility
+function toggleJsSections() {
+  const checked = document.getElementById('useJs').checked;
+  document.querySelectorAll('.js-only-section').forEach(el => {
+    el.style.display = checked ? '' : 'none';
+  });
+  document.getElementById('jsOnNote').style.display = checked ? '' : 'none';
+  document.getElementById('jsOffNote').style.display = checked ? 'none' : '';
+}
+
+// Initial render
+renderActions();
+
+// ---- Regex Replace Repeater ----
+
+function getRegexRules() {
+  try { return JSON.parse(document.getElementById('regexReplaceJson').value) || []; } catch { return []; }
+}
+
+function setRegexRules(arr) {
+  writeJson('regexReplaceJson', arr);
+}
+
+function renderRegexRules() {
+  const rules = getRegexRules();
+  const container = document.getElementById('regex-rules-visual');
+  container.innerHTML = '';
+  if (!rules.length) {
+    container.innerHTML = '<div class="small text-body-secondary">Belum ada rule.</div>';
+    return;
+  }
+
+  rules.forEach((r, i) => {
+    const div = document.createElement('div');
+    div.className = 'action-item';
+    div.style.borderLeft = '3px solid #fd7e14';
+    div.innerHTML = `
+      <div class="row g-2 align-items-end">
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-0">Field <span class="text-body-secondary">(atau <code>*</code>)</span></label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder="title, * ..." value="${escapeAttr(r.field || '')}" onchange="updateRR(${i},'field',this.value)" spellcheck="false">
+        </div>
+        <div class="col-6 col-md-4">
+          <label class="form-label small mb-0">Pattern <span class="text-body-secondary">(regex)</span></label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder="\\s+Bahasa Indonesia$" value="${escapeAttr(r.pattern || '')}" onchange="updateRR(${i},'pattern',this.value)" spellcheck="false">
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-0">Replacement</label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder="(kosong = hapus)" value="${escapeAttr(r.replacement || '')}" onchange="updateRR(${i},'replacement',this.value)" spellcheck="false">
+        </div>
+        <div class="col-4 col-md-1">
+          <label class="form-label small mb-0">Flags</label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder="g" value="${escapeAttr(r.flags || '')}" onchange="updateRR(${i},'flags',this.value)" spellcheck="false">
+        </div>
+        <div class="col-2 col-md-1 text-end">
+          <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeRR(${i})" title="Remove" aria-label="Remove rule ${i + 1}"><i class="bi bi-trash"></i></button>
+        </div>
+      </div>`;
+    container.appendChild(div);
+  });
+}
+
+function addRegexRule() {
+  const rules = getRegexRules();
+  rules.push({ field: '', pattern: '', replacement: '', flags: 'g' });
+  setRegexRules(rules);
+  renderRegexRules();
+}
+
+function removeRR(i) {
+  const rules = getRegexRules();
+  rules.splice(i, 1);
+  setRegexRules(rules);
+  renderRegexRules();
+}
+
+function updateRR(i, prop, val) {
+  const rules = getRegexRules();
+  rules[i][prop] = val;
+  setRegexRules(rules);
+}
+
+document.getElementById('regexReplaceJson').addEventListener('input', () => { renderRegexRules(); });
+renderRegexRules();
+
+// ---- Custom Fields Repeater ----
+const CF_TYPES = ['string', 'array', 'object_array'];
+
+function getCustomFields() {
+  try { return JSON.parse(document.getElementById('customFieldsJson').value) || []; } catch { return []; }
+}
+
+function setCustomFields(arr) {
+  writeJson('customFieldsJson', arr);
+}
+
+function renderCustomFields() {
+  const fields = getCustomFields();
+  const container = document.getElementById('custom-fields-visual');
+  container.innerHTML = '';
+  if (!fields.length) {
+    container.innerHTML = '<div class="small text-body-secondary">Belum ada custom field.</div>';
+    return;
+  }
+
+  fields.forEach((f, i) => {
+    const div = document.createElement('div');
+    div.className = 'action-item';
+    div.style.borderLeft = '3px solid #0d6efd';
+
+    let subFieldsHtml = '';
+    if (f.type === 'object_array') {
+      const subs = f.fields || [];
+      subFieldsHtml = `
+        <div class="ms-2 ms-md-4 mt-3 ps-2 border-start">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <small class="text-info-emphasis fw-semibold">Sub-fields</small>
+            <button type="button" class="btn btn-sm btn-outline-info py-0 px-1" onclick="addSubField(${i})" title="Add sub-field" aria-label="Add sub-field"><i class="bi bi-plus-lg"></i></button>
+          </div>
+          <div id="cf-sub-${i}">
+            ${subs.length ? subs.map((sf, si) => renderSubFieldHtml(i, si, sf)).join('') : '<div class="small text-body-secondary">Belum ada sub-field.</div>'}
+          </div>
+        </div>`;
+    }
+
+    div.innerHTML = `
+      <div class="row g-2 align-items-end">
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-0">Key</label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder="field_name" value="${escapeAttr(f.key)}" onchange="updateCF(${i},'key',this.value)" spellcheck="false">
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-0">Selector</label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder=".css-selector or js:..." value="${escapeAttr(f.selector)}" onchange="updateCF(${i},'selector',this.value)" spellcheck="false">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label small mb-0">Type</label>
+          <select class="form-select form-select-sm" onchange="updateCFType(${i},this.value)">
+            ${CF_TYPES.map(t => `<option value="${t}" ${t===f.type?'selected':''}>${t}</option>`).join('')}
+          </select>
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label small mb-0">Attr <span class="text-body-secondary">(opt)</span></label>
+          <input type="text" class="form-control form-control-sm font-monospace" placeholder="href, src..." value="${escapeAttr(f.attr)}" onchange="updateCF(${i},'attr',this.value)" spellcheck="false">
+        </div>
+        <div class="col-8 col-md-1">
+          <div class="d-flex flex-md-column gap-3 gap-md-0">
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="cf-req-${i}" ${f.required ? 'checked' : ''} onchange="updateCF(${i},'required',this.checked)">
+              <label class="form-check-label small text-warning-emphasis" for="cf-req-${i}">Req</label>
+            </div>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="cf-img-${i}" ${f.image ? 'checked' : ''} onchange="updateCF(${i},'image',this.checked)">
+              <label class="form-check-label small text-info-emphasis" for="cf-img-${i}" title="Selalu lewatkan nilai ini ke Image Proxy/Cache (untuk URL CDN tanpa ekstensi gambar)">Img</label>
+            </div>
+          </div>
+        </div>
+        <div class="col-4 col-md-1 text-end">
+          <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeCF(${i})" title="Remove" aria-label="Remove field ${i + 1}"><i class="bi bi-trash"></i></button>
+        </div>
+      </div>
+      ${subFieldsHtml}`;
+    container.appendChild(div);
+  });
+}
+
+function renderSubFieldHtml(parentIdx, subIdx, sf) {
+  return `
+    <div class="row g-2 align-items-end mb-2">
+      <div class="col-6 col-md-3">
+        <label class="form-label small mb-0 d-md-none">Key</label>
+        <input type="text" class="form-control form-control-sm font-monospace" placeholder="sub_key" value="${escapeAttr(sf.key)}" onchange="updateSubField(${parentIdx},${subIdx},'key',this.value)" spellcheck="false" aria-label="Sub-field key">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label small mb-0 d-md-none">Selector</label>
+        <input type="text" class="form-control form-control-sm font-monospace" placeholder=".selector" value="${escapeAttr(sf.selector)}" onchange="updateSubField(${parentIdx},${subIdx},'selector',this.value)" spellcheck="false" aria-label="Sub-field selector">
+      </div>
+      <div class="col-6 col-md-2">
+        <label class="form-label small mb-0 d-md-none">Type</label>
+        <select class="form-select form-select-sm" onchange="updateSubField(${parentIdx},${subIdx},'type',this.value)" aria-label="Sub-field type">
+          <option value="string" ${(!sf.type||sf.type==='string')?'selected':''}>string</option>
+          <option value="array" ${sf.type==='array'?'selected':''}>array</option>
+        </select>
+      </div>
+      <div class="col-6 col-md-2">
+        <label class="form-label small mb-0 d-md-none">Attr</label>
+        <input type="text" class="form-control form-control-sm font-monospace" placeholder="attr" value="${escapeAttr(sf.attr)}" onchange="updateSubField(${parentIdx},${subIdx},'attr',this.value)" spellcheck="false" aria-label="Sub-field attribute">
+      </div>
+      <div class="col-8 col-md-1">
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="sf-img-${parentIdx}-${subIdx}" ${sf.image ? 'checked' : ''} onchange="updateSubField(${parentIdx},${subIdx},'image',this.checked)">
+          <label class="form-check-label small text-info-emphasis" for="sf-img-${parentIdx}-${subIdx}" title="Lewatkan nilai ini ke Image Proxy/Cache">Img</label>
+        </div>
+      </div>
+      <div class="col-4 col-md-1 text-end">
+        <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1" onclick="removeSubField(${parentIdx},${subIdx})" title="Remove" aria-label="Remove sub-field"><i class="bi bi-trash"></i></button>
+      </div>
+    </div>`;
+}
+
+function addCustomField() {
+  const fields = getCustomFields();
+  fields.push({ key: '', selector: '', type: 'string' });
+  setCustomFields(fields);
+  renderCustomFields();
+}
+
+function removeCF(i) {
+  const fields = getCustomFields();
+  fields.splice(i, 1);
+  setCustomFields(fields);
+  renderCustomFields();
+}
+
+function updateCF(i, prop, val) {
+  const fields = getCustomFields();
+  if (val === '' || val === undefined || val === false) {
+    delete fields[i][prop];
+  } else {
+    fields[i][prop] = val;
+  }
+  setCustomFields(fields);
+}
+
+function updateCFType(i, val) {
+  const fields = getCustomFields();
+  fields[i].type = val;
+  if (val === 'object_array' && !fields[i].fields) {
+    fields[i].fields = [];
+  }
+  if (val !== 'object_array') {
+    delete fields[i].fields;
+  }
+  setCustomFields(fields);
+  renderCustomFields();
+}
+
+function addSubField(parentIdx) {
+  const fields = getCustomFields();
+  if (!fields[parentIdx].fields) fields[parentIdx].fields = [];
+  fields[parentIdx].fields.push({ key: '', selector: '' });
+  setCustomFields(fields);
+  renderCustomFields();
+}
+
+function removeSubField(parentIdx, subIdx) {
+  const fields = getCustomFields();
+  fields[parentIdx].fields.splice(subIdx, 1);
+  setCustomFields(fields);
+  renderCustomFields();
+}
+
+function updateSubField(parentIdx, subIdx, prop, val) {
+  const fields = getCustomFields();
+  if (val === '' || val === undefined) {
+    delete fields[parentIdx].fields[subIdx][prop];
+  } else {
+    fields[parentIdx].fields[subIdx][prop] = val;
+  }
+  setCustomFields(fields);
+}
+
+// Sync visual when JSON textarea changes
+document.getElementById('customFieldsJson').addEventListener('input', () => { renderCustomFields(); });
+
+// Initial render
+renderCustomFields();
+</script>
