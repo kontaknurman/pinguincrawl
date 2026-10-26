@@ -182,6 +182,9 @@ body {
   .sticky-actions { background: var(--bs-body-bg); }
 }
 .sticky-actions .dirty-note { font-size: 0.85rem; color: var(--bs-warning-text-emphasis); display: none; }
+/* Toasts sit above the sticky Save bar, not on it: on a phone an error toast (they stay
+   until closed) would cover the very button needed once the error is fixed */
+body:has(.sticky-actions) .toast-container { bottom: 4.5rem !important; }
 form.is-dirty .sticky-actions .dirty-note { display: inline; }
 
 .json-status { font-size: 0.78rem; }

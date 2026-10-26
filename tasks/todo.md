@@ -85,3 +85,9 @@ fitur proxy jalan dengan baik serta tambahkan fitur rotate proxy setelahnya."
   crawl sukses; acak menyebar; cadangan tetap di A, A dimatikan → B; Cek per proxy; semua mati →
   "All 4 proxies tried failed — last: …"; Force OFF tetap langsung; 0 kredensial di log/HTML.
 - E2E utama diulang: **63/63**.
+- UI di browser sungguhan (Playwright, 1440px + 390px) **47/47**: login, form website (baris proxy
+  salah → error + input tetap), status proxy, badge dashboard tanpa password, Cek Lightpanda per proxy
+  di tab baru, tanpa error JS / horizontal overflow. Menemukan: di HP toast error (tidak hilang
+  sendiri) menutupi tombol Save — sudah ada sejak crawlkomik; toast kini di atas bar Save.
+- Migrasi **9/9**: DB buatan kode crawlkomik → Restore → login password lama, kolom
+  `proxy_rotation` ditambahkan, crawl lewat proxy lama berhasil.
