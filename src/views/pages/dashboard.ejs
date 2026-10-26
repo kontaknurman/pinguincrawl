@@ -3,8 +3,7 @@
   const bs = typeof browserStatus !== 'undefined' && browserStatus ? browserStatus : { active: 0, queued: 0, max: 3 };
   const dataFs = filesystems.find(f => f.keys.includes('data')) || filesystems[0];
   const lowFs = filesystems.find(f => f.low);
-  // Never show proxy credentials (user:pass@) on screen
-  const hideCreds = (p) => String(p || '').replace(/\/\/[^@/]*@/, '//').replace(/^[^/@]*@/, '');
+  const rotationLabels = { round_robin: 'bergiliran', random: 'acak', failover: 'cadangan' };
   const exampleSite = websites.length ? websites[0].name : 'mywebsite';
 %>
 <div class="page-header">
@@ -97,7 +96,7 @@
               <a href="/admin/websites/<%= w.id %>" class="fw-semibold text-decoration-none"><%= w.name %></a>
               <% if (w.active) { %><span class="badge rounded-pill text-bg-success">Active</span><% } else { %><span class="badge rounded-pill text-bg-secondary">Inactive</span><% } %>
               <% if (w.image_proxy) { %><span class="badge rounded-pill text-bg-info" title="Image cache method: <%= w.image_cache_method || 'browser' %>"><i class="bi bi-images me-1"></i>Img Proxy</span><% } %>
-              <% if (w.proxy) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis" title="<%= hideCreds(w.proxy) %>"><i class="bi bi-shield-lock me-1"></i>Proxy</span><% } %>
+              <% const px = proxyLabels[w.id] || []; if (px.length) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis" title="<%= px.join('\n') %><%= px.length > 1 ? '\nrotasi: ' + (rotationLabels[w.proxy_rotation] || rotationLabels.round_robin) : '' %>"><i class="bi bi-shield-lock me-1"></i>Proxy<%= px.length > 1 ? ' ×' + px.length : '' %></span><% } %>
               <% if (w.timezone) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis"><i class="bi bi-clock me-1"></i><%= w.timezone %></span><% } %>
             </div>
             <div class="website-url mt-1"><%= w.base_url %></div>

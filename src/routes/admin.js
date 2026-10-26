@@ -11,6 +11,7 @@ const QRCode = require('qrcode');
 const { clearAllImages } = require('../services/image-proxy');
 const { getActiveBrowserCount } = require('../services/browser');
 const lightpanda = require('../services/lightpanda');
+const proxyPool = require('../services/proxy-pool');
 const storage = require('../services/storage');
 
 
@@ -158,9 +159,12 @@ router.use((req, res, next) => {
 
 // --- Dashboard ---
 router.get('/', (req, res) => {
+  const websites = db.getAllWebsites();
   res.render('pages/dashboard', {
     page: 'dashboard',
-    websites: db.getAllWebsites(),
+    websites,
+    // Proxy labels without credentials (host:port:user:pass would slip past a URL regex)
+    proxyLabels: Object.fromEntries(websites.map((w) => [w.id, proxyPool.parseProxyList(w.proxy).map(proxyPool.displayOf)])),
     configCounts: db.getPageConfigCountsByWebsite(),
     browserStatus: getActiveBrowserCount(),
     logStats: db.getApiLogStats(),
@@ -304,7 +308,9 @@ function websiteFromBody(body) {
     name,
     base_url: baseUrl,
     active: body.active === 'on',
-    proxy: body.proxy,
+    // One proxy per line; a typo is a form error, not a crawl that silently goes direct
+    proxy: proxyPool.normalizeProxyList(body.proxy) || null,
+    proxy_rotation: proxyPool.ROTATIONS.includes(body.proxy_rotation) ? body.proxy_rotation : 'round_robin',
     user_agent: body.user_agent,
     image_proxy: body.image_proxy === 'on',
     image_cache_method: IMAGE_CACHE_METHODS.includes(body.image_cache_method) ? body.image_cache_method : 'browser',
@@ -322,6 +328,7 @@ function websiteFormLocals(req, website, extra = {}) {
     pageConfigs: isEdit ? db.getPageConfigs(website.id) : [],
     pageTypes: getPageTypesForWebsite(isEdit ? website.id : null),
     customPageTypes: isEdit ? db.getCustomPageTypes(website.id) : [],
+    proxyStatus: proxyPool.status(proxyPool.parseProxyList(website && website.proxy)),
     page: isEdit ? 'website-edit' : 'websites',
     apiBase: apiBaseUrl(req),
     apiKeySet: !!db.getSetting('api_key'),

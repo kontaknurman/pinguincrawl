@@ -37,6 +37,10 @@ function releaseBrowserSlot() {
   }
 }
 
+// How a transfer through a proxy dies when the proxy is the problem (dead, wrong address
+// or login, too slow): Lightpanda's libcurl error names, Puppeteer's timeout, a 407.
+const PROXY_FAILURE_RE = /\b(CouldntConnect|CouldntResolveProxy|Proxy|GotNothing|RecvError|SendError|SslConnectError|OperationTimedout)\b|Navigation timeout|HTTP 407/;
+
 // A JS-only interstitial that clears on its own does so within a few seconds. Lightpanda
 // can't pass the interactive kind at all, so waiting the page's full timeout for one
 // (30 s by default) only delays the error.
@@ -46,26 +50,45 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const PROXY_DEFAULT_PORTS = { 'http:': 80, 'https:': 443, 'socks4:': 1080, 'socks4a:': 1080, 'socks5:': 1080, 'socks5h:': 1080 };
+
 /**
- * Parse proxy URL into components.
- * Supports: http://user:pass@host:port, http://host:port, host:port
+ * Parse one proxy. Accepts
+ *   http://user:pass@host:port   socks5://user:pass@host:port   user:pass@host:port
+ *   host:port                    host:port:user:pass (how proxy providers export lists)
+ * Returns { server, display, hostname }: `server` is the URL handed to Lightpanda,
+ * credentials included; `display` has no credentials and is safe to log or show.
+ * Throws on anything else, so a typo is reported instead of crawling without a proxy.
  */
 function parseProxy(proxy) {
-  if (!proxy) return null;
-  try {
-    // Ensure protocol prefix for URL parsing
-    const withProto = proxy.includes('://') ? proxy : `http://${proxy}`;
-    const parsed = new URL(withProto);
-    return {
-      server: `${parsed.protocol}//${parsed.hostname}:${parsed.port || 80}`,
-      hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
-      username: parsed.username ? decodeURIComponent(parsed.username) : null,
-      password: parsed.password ? decodeURIComponent(parsed.password) : null,
-    };
-  } catch {
-    // Fallback: treat as host:port
-    return { server: `http://${proxy}`, hostname: proxy.split(':')[0], username: null, password: null };
+  let s = String(proxy || '').trim();
+  if (!s) return null;
+  // host:port:user:pass — host and port first, so a password may contain ':' or '@'
+  const hostPortUserPass = !s.includes('://') && /^([^:@\s/]+):(\d{1,5}):([^:\s]+):(.+)$/.exec(s);
+  if (hostPortUserPass) {
+    const [, host, port, user, pass] = hostPortUserPass;
+    s = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
   }
+  let parsed;
+  try {
+    parsed = new URL(s.includes('://') ? s : `http://${s}`);
+  } catch {
+    throw new Error(`Invalid proxy "${proxy}" — use http://user:pass@host:port, socks5://host:port or host:port:user:pass`);
+  }
+  if (!PROXY_DEFAULT_PORTS[parsed.protocol] || !parsed.hostname || parsed.pathname.length > 1) {
+    throw new Error(`Invalid proxy "${parsed.protocol}//${parsed.host}" — supported: http, https, socks4, socks5`);
+  }
+  // Like Chrome, let a SOCKS5 proxy resolve hostnames itself: no DNS lookups leak past it
+  const protocol = parsed.protocol === 'socks5:' ? 'socks5h:' : parsed.protocol;
+  // Always explicit: libcurl assumes 1080 for a proxy without a port, URL parsing drops a default 80
+  const hostPort = `${parsed.hostname}:${parsed.port || PROXY_DEFAULT_PORTS[parsed.protocol]}`;
+  // username/password are still percent-encoded here, which is what a proxy URL needs
+  const auth = parsed.username ? `${parsed.username}${parsed.password ? ':' + parsed.password : ''}@` : '';
+  return {
+    server: `${protocol}//${auth}${hostPort}`,
+    display: `${protocol}//${hostPort}`,
+    hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
+  };
 }
 
 /** The zone if Intl knows it — Lightpanda silently ignores one it doesn't. */
@@ -106,6 +129,11 @@ async function proxyCidrs(proxyInfo) {
  *                     would let the page's own scripts read any reachable URL, so private
  *                     networks (localhost, LAN, cloud metadata) are blocked at the same time.
  *   waitTimeout       page timeout; single transfers may take as long (Lightpanda default 15 s)
+ *
+ * Proxy credentials travel inside the --http-proxy URL. page.authenticate() only answers a
+ * 407 on plain-HTTP requests in Lightpanda, so an HTTPS site behind an authenticated proxy
+ * (the CONNECT tunnel) and every SOCKS login failed with it. The catch: other users on the
+ * same machine can read a process's arguments — no concern inside the container.
  */
 async function getBrowser(proxy, { timezone = null, blockImages = false, crossOriginFetch = false, waitTimeout = 0 } = {}) {
   const proxyInfo = parseProxy(proxy);
@@ -132,9 +160,8 @@ async function getBrowser(proxy, { timezone = null, blockImages = false, crossOr
     throw err;
   }
 
-  // Store proxy auth info on browser instance for page.authenticate()
-  browser._proxyAuth = proxyInfo?.username ? { username: proxyInfo.username, password: proxyInfo.password } : null;
   browser._lightpanda = lp;
+  browser._proxy = proxyInfo ? proxyInfo.display : null;
 
   // Closing means disconnecting AND stopping the server — Lightpanda keeps running after
   // its client leaves, and Puppeteer's own close() only sends Browser.close over CDP.
@@ -165,11 +192,6 @@ async function createPage(browser, userAgent, customHeaders, cookies, localStora
   if (userAgent) {
     if (/mozilla/i.test(userAgent)) warnRefusedUserAgent(userAgent);
     else await page.setUserAgent(userAgent);
-  }
-
-  // Authenticate proxy if credentials were provided
-  if (browser._proxyAuth) {
-    await page.authenticate(browser._proxyAuth);
   }
 
   // Only send headers the admin configured
@@ -377,7 +399,12 @@ async function fetchPage(url, options = {}) {
   try {
     const page = await createPage(browser, userAgent, customHeaders, cookies, localStorage);
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: waitTimeout || 30000 });
+    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: waitTimeout || 30000 });
+    // A plain-HTTP site behind a proxy that refuses the login comes back as a 407 page —
+    // scraping it would return the proxy's error page as data
+    if (resp && resp.status() === 407) {
+      throw new Error('Proxy rejected the credentials (HTTP 407) — check the proxy user/password');
+    }
 
     let cfDetected = await waitForCloudflare(page, Math.min(waitTimeout || 30000, CF_WAIT_MS));
     if (cfDetected) {
@@ -413,6 +440,11 @@ async function fetchPage(url, options = {}) {
 
     return { page, browser, cfDetected };
   } catch (err) {
+    if (browser._proxy) {
+      // Say which proxy it was — with a rotating list that's the first thing to know
+      if (PROXY_FAILURE_RE.test(err.message)) err.proxyFailed = true;
+      err.message += ` [proxy ${browser._proxy}]`;
+    }
     await browser.close();
     throw err;
   }
@@ -500,6 +532,7 @@ module.exports = {
   fetchPage,
   fetchPageSimple,
   extractCookies,
+  parseProxy,
   delay,
   DEFAULT_USER_AGENT,
   getActiveBrowserCount,

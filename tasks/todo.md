@@ -46,3 +46,42 @@ semua di scratchpad, tidak masuk repo):
   start berikutnya; SIGTERM saat crawl → 0 proses tersisa
 - binary hilang → error API jelas, warning startup, alert di Settings
 - Situs nyata lewat proxy (Wikipedia): gambar upload.wikimedia.org ter-cache utuh (46 KB)
+
+---
+
+# Lanjutan: port kustom, proxy, rotate proxy
+
+## Permintaan (user)
+"setelah selesai bantu juga agar support custom port, misalnya 6000:6000, bukan 6000:80 dan pastikan
+fitur proxy jalan dengan baik serta tambahkan fitur rotate proxy setelahnya."
+
+## Temuan
+- Port: compose memakai `"3000:3000"` + `PORT=3000` tetap — ganti port berarti mengedit 3 tempat.
+- **Proxy dengan login + situs HTTPS gagal total** (`CouldntConnect`): Lightpanda menjawab 407 lewat
+  `page.authenticate()` hanya untuk request HTTP biasa; tunnel CONNECT (semua situs HTTPS) dan login
+  SOCKS tidak pernah dapat kredensial. Ketahuan setelah diuji ke target HTTPS — uji awal hanya HTTP.
+- Format `host:port:user:pass` (format daftar penyedia proxy) tidak dikenali; dashboard bisa
+  membocorkan password di format itu (regex hanya mengenal `user:pass@`).
+
+## Plan
+- [x] 1. `PORT` tunggal: build arg + ENV + `EXPOSE`, compose `${PORT}:${PORT}`, `.env.example`
+- [x] 2. Kredensial di URL `--http-proxy` (tanpa `page.authenticate`), `parseProxy` baru (http/https/
+       socks4/socks5→socks5h, `host:port:user:pass`, validasi), error menyebut proxy tanpa password,
+       407 → error jelas
+- [x] 3. `services/proxy-pool.js`: daftar proxy, rotasi bergiliran/acak/cadangan, ganti proxy dalam
+       request yang sama (maks. 3, tidak memakai retry), istirahat 5 menit untuk proxy gagal
+- [x] 4. Form website (textarea + mode rotasi + status per proxy), dashboard, Cek Lightpanda per proxy
+- [x] 5. Verifikasi + README
+
+## Review
+- Docker (daemon lokal di sandbox): image dibangun dengan `PORT=6000` → `EXPOSE 6000`, container
+  `-p 6000:6000` jalan sebagai user non-root, Cek Lightpanda di dalam container bersih; `-e PORT=7000
+  -p 7000:7000` dan compose dengan `.env` `PORT=6000` → `0.0.0.0:6000->6000/tcp`.
+- Matriks proxy (kode asli, Lightpanda asli, proxy lokal yang meneruskan ke internet): HTTP tanpa/
+  dengan login ke HTTPS, SOCKS5 tanpa/dengan login, `host:port:user:pass` (password berisi `@` dan
+  `:`), cache gambar metode Browser lewat HTTP+login dan SOCKS5+login (Wikipedia, 46 KB utuh),
+  password salah / proxy mati → `proxyFailed` + `[proxy …]` tanpa password, 407 → pesan jelas.
+- E2E rotasi **21/21**: bergiliran A→B→C dengan proxy mati dilewati (1x coba lalu istirahat), 8/8
+  crawl sukses; acak menyebar; cadangan tetap di A, A dimatikan → B; Cek per proxy; semua mati →
+  "All 4 proxies tried failed — last: …"; Force OFF tetap langsung; 0 kredensial di log/HTML.
+- E2E utama diulang: **63/63**.

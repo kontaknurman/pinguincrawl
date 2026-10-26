@@ -4,8 +4,9 @@
  * Answers "does the crawl browser work on this server, and how does it present itself?"
  * — binary and version, start-up, JavaScript, cookies, the User-Agent it really sends and
  * the timezone it reports. For a website it also opens the base URL with that website's
- * proxy / User-Agent / headers / cookies and says whether a challenge page came back,
- * which Lightpanda cannot get past.
+ * User-Agent / headers / cookies through each of its proxies (feeding the results into
+ * the rotation's health state) and says whether a challenge page came back, which
+ * Lightpanda cannot get past.
  *
  * Every check reports { name, ok, value, note } so the admin can act on it.
  */
@@ -13,10 +14,13 @@
 const http = require('http');
 const db = require('../models/database');
 const lightpanda = require('./lightpanda');
+const proxyPool = require('./proxy-pool');
 const { getBrowser, createPage } = require('./browser');
 const { detectCaptcha } = require('./captcha-detector');
 
 const SITE_TIMEOUT_MS = 30000;
+const MAX_PROXIES_CHECKED = 10;
+const PROXY_CHECK_CONCURRENCY = 3;
 
 /**
  * Serve a throwaway page on 127.0.0.1 so we see the request headers the browser really
@@ -47,9 +51,40 @@ function parseJson(text, fallback) {
   }
 }
 
-// Never show proxy credentials (user:pass@)
-function hideCreds(proxy) {
-  return String(proxy || '').replace(/\/\/[^@/]*@/, '//').replace(/^[^/@]*@/, '');
+/** Run fn over items, at most `limit` at a time; results keep the input order. */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** Open a URL the way a crawl would, through one proxy (or none). */
+async function openSite(url, proxy, { userAgent, customHeaders, cookies, localStorage, timezone }) {
+  const browser = await getBrowser(proxy, { timezone, waitTimeout: SITE_TIMEOUT_MS });
+  try {
+    const page = await createPage(browser, userAgent, customHeaders, cookies, localStorage);
+    const started = Date.now();
+    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: SITE_TIMEOUT_MS });
+    const status = resp ? resp.status() : null;
+    if (status === 407) throw new Error('Proxy rejected the credentials (HTTP 407)');
+    const challenge = await detectCaptcha(page);
+    return {
+      url: page.url(),
+      status,
+      title: await page.title(),
+      loadMs: Date.now() - started,
+      challenge: challenge.detected ? { type: challenge.type, reason: challenge.reason } : null,
+    };
+  } finally {
+    await browser.close();
+  }
 }
 
 /**
@@ -132,41 +167,54 @@ async function runBrowserCheck(websiteName) {
     }
   }
 
-  // 2. The website itself, exactly as a crawl would open it
+  // 2. The website itself, exactly as a crawl would open it — through each of its proxies
   if (website && p) {
-    const proxyLabel = website.proxy ? ` lewat proxy ${hideCreds(website.proxy)}` : '';
-    let browser;
-    try {
-      browser = await getBrowser(website.proxy || null, { timezone, waitTimeout: SITE_TIMEOUT_MS });
-      const page = await createPage(browser, userAgent, customHeaders, parseJson(website.cookies, []), parseJson(website.local_storage, {}));
-      const started = Date.now();
-      const resp = await page.goto(website.base_url, { waitUntil: 'networkidle2', timeout: SITE_TIMEOUT_MS });
-      const challenge = await detectCaptcha(page);
-      raw.site = {
-        url: page.url(),
-        status: resp ? resp.status() : null,
-        title: await page.title(),
-        loadMs: Date.now() - started,
-        challenge: challenge.detected ? { type: challenge.type, reason: challenge.reason } : null,
-      };
-      const status = raw.site.status;
-      add('Website bisa dibuka', status !== null && status < 400,
-        `HTTP ${status === null ? '?' : status} dalam ${raw.site.loadMs} ms${proxyLabel} — "${raw.site.title}"`,
-        `Base URL menjawab HTTP ${status}. Cek URL-nya, atau situs menolak Lightpanda / IP server${website.proxy ? ' / proxy' : ''}.`);
-      add('Tidak ada halaman challenge', !challenge.detected,
-        challenge.detected ? `${challenge.type}: ${challenge.reason}` : 'tidak terdeteksi',
+    const proxies = proxyPool.parseProxyList(website.proxy);
+    const targets = proxies.length ? proxies.slice(0, MAX_PROXIES_CHECKED) : [null];
+    const pageSetup = { userAgent, customHeaders, cookies: parseJson(website.cookies, []), localStorage: parseJson(website.local_storage, {}), timezone };
+
+    raw.site = await mapLimit(targets, PROXY_CHECK_CONCURRENCY, async (proxy) => {
+      const via = proxy ? proxyPool.displayOf(proxy) : null;
+      try {
+        const result = await openSite(website.base_url, proxy, pageSetup);
+        if (proxy) proxyPool.reportSuccess(proxy);
+        return { proxy: via, ...result };
+      } catch (err) {
+        if (proxy) proxyPool.reportFailure(proxy, err.message); // the check counts as real use
+        return { proxy: via, error: err.message };
+      }
+    });
+
+    raw.site.forEach((r, i) => {
+      const name = proxies.length ? `Website lewat proxy ${i + 1} (${r.proxy})` : 'Website bisa dibuka';
+      if (r.error) {
+        add(name, false, r.error, proxies.length
+          ? 'Proxy ini tidak bisa dipakai — cek alamat, port dan user/password-nya, atau proxy-nya sedang mati. Saat crawl, proxy yang gagal otomatis dilewati.'
+          : `Gagal membuka ${website.base_url}. Cek URL-nya.`);
+        return;
+      }
+      add(name, r.status !== null && r.status < 400,
+        `HTTP ${r.status === null ? '?' : r.status} dalam ${r.loadMs} ms — "${r.title}"${r.challenge ? ` — challenge ${r.challenge.type}` : ''}`,
+        `Base URL menjawab HTTP ${r.status}. Cek URL-nya, atau situs menolak Lightpanda / IP ${proxies.length ? 'proxy ini' : 'server'}.`);
+    });
+    if (proxies.length > MAX_PROXIES_CHECKED) {
+      add('Proxy lain', true, `${proxies.length - MAX_PROXIES_CHECKED} proxy berikutnya tidak dicek (maks. ${MAX_PROXIES_CHECKED})`);
+    }
+
+    const loaded = raw.site.filter((r) => !r.error);
+    const challenged = loaded.filter((r) => r.challenge);
+    if (loaded.length) {
+      add('Tidak ada halaman challenge', !challenged.length,
+        challenged.length
+          ? `${challenged[0].challenge.type}: ${challenged[0].challenge.reason}${loaded.length > 1 ? ` (${challenged.length} dari ${loaded.length} proxy)` : ''}`
+          : 'tidak terdeteksi',
         'Situs ini memasang CAPTCHA/WAF (mis. Cloudflare). Lightpanda tidak bisa melewatinya — crawl situs ini dengan crawler berbasis Chrome seperti crawlkomik.');
-    } catch (err) {
-      add('Website bisa dibuka', false, `${err.message}${proxyLabel}`,
-        `Gagal membuka ${website.base_url}. Cek URL${website.proxy ? ' dan proxy' : ''}-nya.`);
-    } finally {
-      if (browser) await browser.close();
     }
   }
 
   const problems = checks.filter(c => !c.ok);
   return {
-    website: website ? { name: website.name, baseUrl: website.base_url, userAgentSet: !!website.user_agent, proxySet: !!website.proxy } : null,
+    website: website ? { name: website.name, baseUrl: website.base_url, userAgentSet: !!website.user_agent, proxies: proxyPool.parseProxyList(website.proxy).length, proxyRotation: website.proxy_rotation || 'round_robin' } : null,
     status: problems.length === 0 ? 'clean' : 'issues',
     summary: problems.length === 0
       ? 'Lightpanda siap dipakai untuk crawl.'

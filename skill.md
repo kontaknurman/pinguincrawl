@@ -90,7 +90,7 @@ See [references/task-templates.md](references/task-templates.md) for file templa
 - Runtime: Node.js 22.12+
 - Framework API: Express.js
 - Browser Automation: Lightpanda (headless browser, render JS) via puppeteer-core over CDP — satu proses `lightpanda serve` per crawl (`src/services/lightpanda.js`)
-- Proxy Support: proxy per website diteruskan ke Lightpanda (`--http-proxy`), kredensial lewat `page.authenticate()`
+- Proxy Support: daftar proxy per website (satu per baris, HTTP/HTTPS/SOCKS5), dirotasi per crawl (`src/services/proxy-pool.js`), diteruskan ke Lightpanda lewat `--http-proxy` beserta kredensialnya
 - Admin Panel: EJS template engine + Bootstrap 5 (server-side render, simple)
 - Database Config: SQLite via better-sqlite3 (zero config, single file)
 - Process Manager: PM2 (production)

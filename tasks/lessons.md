@@ -81,6 +81,15 @@
 
 ---
 
+## 2026-10-26 - Proxy
+
+**Mistake**: The Lightpanda port kept Chrome's proxy approach — host in the proxy flag, credentials through `page.authenticate()` — and it was tested only against a plain-HTTP site. Every HTTPS site behind an authenticated proxy failed with `CouldntConnect`, and SOCKS logins failed too: Lightpanda only answers a 407 that way for plain-HTTP requests, never for the CONNECT tunnel.
+**Pattern**: Proxy authentication happens at different layers for HTTP (407 on each request) and HTTPS (407 on CONNECT) and SOCKS (its own handshake). A test that only covers one of them says nothing about the others — and most real sites are HTTPS.
+**Rule**: Test proxy support as a matrix: {HTTP, SOCKS5} × {no login, login} × {http, https target}, plus a wrong password and a dead proxy (both must fail with a message naming the proxy, never its password). Put credentials where the transport itself uses them (the proxy URL), not in an application-level retry.
+**Applied**: `src/services/browser.js` `parseProxy()` / `getBrowser()`, `src/services/crawler.js` `fetchPageAuto()`
+
+---
+
 ## 2026-03-20 - Feature Scope
 
 **Mistake**: When user asked for "custom config", implemented only custom JSON response fields. User actually wanted custom page types (new config types + API endpoints), not just custom fields within existing configs.

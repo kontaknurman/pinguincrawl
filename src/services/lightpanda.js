@@ -61,7 +61,7 @@ function notInstalledError() {
 /**
  * Arguments for `lightpanda serve`.
  * @param {object} o
- * @param {string} [o.proxy]          proxy URL without credentials (those go through page.authenticate)
+ * @param {string} [o.proxy]          proxy URL, credentials included (http, https, socks4, socks5h)
  * @param {string} [o.timezone]       IANA zone for Date/Intl
  * @param {string[]} [o.loadResources] sub-resources Lightpanda should actually request
  * @param {number} [o.httpTimeoutMs]  per-transfer timeout

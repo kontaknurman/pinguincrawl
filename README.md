@@ -25,7 +25,7 @@ Situs di balik Cloudflare/CAPTCHA tetap butuh crawler berbasis Chrome (crawlkomi
 - **Challenge detection** — Cloudflare/DDoS-Guard interstitials, Turnstile/reCAPTCHA/hCaptcha widgets and "verify you are human" pages make the crawl fail fast with a clear error (not retried), instead of returning the challenge page as data. Toggle in Settings
 - **Cek Lightpanda** (Settings) — starts the browser and reports version, JS, cookies, the User-Agent it really sends and its timezone; per website it also opens the base URL through that website's proxy and says whether a challenge page came back
 - **Custom headers & cookies** per website (optional) — session cookies auto-saved when a challenge page clears by itself
-- **Proxy support** per website (`http://user:pass@host:port`)
+- **Proxy & rotate proxy** per website — HTTP/HTTPS/SOCKS5 with login, `host:port:user:pass` lists; several proxies rotate (round-robin / random / failover), a failing proxy is swapped for the next one within the same request and rested for 5 minutes — see [Proxy & rotasi proxy](#proxy--rotasi-proxy)
 - **Timezone per website** — the browser clock (`Date`/`Intl`); the container runs in UTC
 - **Image proxy/cache** - caches images through server for blob URLs or referrer-restricted sources
   - Toggle per website in admin panel
@@ -141,6 +141,20 @@ Setelan headless, CAPTCHA takeover (timeout, webhook) dan fingerprint check seng
 - Cache gambar metode **Browser**: karena tidak ada gambar utuh yang bisa ditangkap, gambar diunduh dengan `fetch()` di dalam halaman. Gambar CDN beda origin, jadi crawl yang memakai metode ini berjalan dengan CORS dimatikan — dan **jaringan privat diblokir** (localhost, LAN, metadata cloud) supaya script halaman tidak bisa membaca layanan internal. Proxy di alamat privat (squid lokal, container VPN) otomatis dikecualikan.
 - Proses Lightpanda yang tertinggal karena Node di-kill paksa (OOM, `SIGKILL`) dibunuh saat server start dan tiap 30 menit.
 
+## Proxy & rotasi proxy
+Field **Proxy** di form website, satu proxy per baris:
+```
+http://user:pass@1.2.3.4:8080
+socks5://user:pass@5.6.7.8:1080
+9.9.9.9:3128:user:pass
+```
+- **Format**: `http://`, `https://`, `socks4://`, `socks5://` (DNS ikut di-resolve proxy), tanpa skema = HTTP, dan `host:port:user:pass` (format daftar dari penyedia proxy — password boleh berisi `:` atau `@`). Di format URL, karakter khusus ditulis ter-encode (`@` → `%40`). Baris kosong dan baris berawalan `#` diabaikan; baris yang salah ditolak saat Save dengan nomor barisnya.
+- **Rotasi** (pilihan *Rotasi proxy*): **Bergiliran** — tiap crawl proxy berikutnya; **Acak**; **Cadangan** — selalu proxy pertama, sisanya hanya saat proxy itu gagal.
+- **Proxy gagal** (tidak bisa dihubungi, login salah, terlalu lambat) langsung diganti proxy lain di request yang sama — maks. 3 kali, tidak memakai jatah *Retry count* — lalu **diistirahatkan 5 menit**. Kalau semua sedang istirahat, semuanya tetap dicoba. Error API menyebut proxy-nya (tanpa password), mis. `CouldntConnect at https://… [proxy http://1.2.3.4:8080]`.
+- **Status**: halaman edit website menampilkan status tiap proxy (OK / gagal · istirahat / belum dipakai); **Cek semua proxy** (atau Settings → Cek Lightpanda per website) membuka base URL lewat tiap proxy. Status disimpan di memori, mulai dari nol setelah restart.
+- **Yang lewat proxy**: halaman, semua request JavaScript-nya, dan cache gambar metode **Browser**. **Tidak** lewat proxy: metode **Node.js HTTP**, **Lazy Proxy**, dan mode HTTP biasa (JS off). Page config bisa mematikan proxy per page type (**Force OFF**).
+- Kredensial proxy diteruskan ke Lightpanda di argumen `--http-proxy` — satu-satunya cara yang jalan untuk situs HTTPS (tunnel CONNECT) dan SOCKS. Artinya user lain di mesin yang sama bisa melihatnya lewat `ps`; di dalam container Docker hal ini tidak berlaku.
+
 ## Cloudflare, CAPTCHA & WAF
 Lightpanda tidak punya mesin grafis dan selalu mengaku sebagai Lightpanda, jadi challenge Cloudflare/Turnstile/reCAPTCHA/hCaptcha **tidak bisa dilewati** — tidak ada mode headful, stealth, atau ambil-alih manual seperti di crawlkomik.
 
@@ -179,6 +193,7 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 - Regex replace rules per page type (post-scrape text transformation)
 - Custom response fields — add extra fields to API response (string, array, object_array with sub-fields)
 - Custom headers & cookies per website (JSON fields in website form)
+- Proxy list + rotation mode per website, with per-proxy status and "Cek semua proxy"
 - View API logs (`/admin/logs`) — filter, stats, delete all/errors/old; logs >2 weeks auto-deleted
 - Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, password, 2FA, logout all devices
 - Backup & restore database (Settings → Backup & Restore)
@@ -201,7 +216,8 @@ src/
   models/database.js  # SQLite schema + CRUD
   services/lightpanda.js  # Lightpanda processes: start (port 0), stop, sweep orphans, version
   services/browser.js # Puppeteer-core over CDP: per-crawl browser, page setup, actions, challenge check
-  services/browser-check.js # "Cek Lightpanda" self-check
+  services/browser-check.js # "Cek Lightpanda" self-check (per proxy for a website)
+  services/proxy-pool.js # Proxy list parsing, rotation (round-robin/random/failover), cooldown of failing proxies
   services/storage.js # Disk/inode report + cleanup jobs (Storage page)
   services/crawler.js    # Crawl logic per page type
   services/image-proxy.js # Image cache/proxy service

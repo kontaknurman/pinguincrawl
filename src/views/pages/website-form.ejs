@@ -67,9 +67,40 @@
         <div class="card-header"><h2 class="section-title"><i class="bi bi-shield-lock me-1"></i>Jaringan &amp; identitas browser</h2></div>
         <div class="card-body">
           <div class="mb-3">
-            <label class="form-label" for="proxy">Proxy <small class="text-body-secondary">(opsional)</small></label>
-            <input type="text" id="proxy" name="proxy" class="form-control font-monospace" value="<%= w.proxy || '' %>" placeholder="http://user:pass@host:port" autocapitalize="none" spellcheck="false" autocomplete="off">
+            <label class="form-label" for="proxy">Proxy <small class="text-body-secondary">(opsional, satu per baris)</small></label>
+            <textarea id="proxy" name="proxy" class="form-control font-monospace" rows="3" placeholder="http://user:pass@host:port&#10;socks5://user:pass@host:port&#10;host:port:user:pass" autocapitalize="none" spellcheck="false" autocomplete="off"><%= w.proxy || '' %></textarea>
+            <small class="form-hint">Format: <code>http://user:pass@host:port</code>, <code>socks5://…</code>, <code>host:port</code> atau <code>host:port:user:pass</code>. Lebih dari satu baris = dirotasi; proxy yang gagal otomatis diganti proxy berikutnya dan diistirahatkan 5 menit.</small>
           </div>
+          <div class="mb-3">
+            <label class="form-label" for="proxy_rotation">Rotasi proxy</label>
+            <select id="proxy_rotation" name="proxy_rotation" class="form-select">
+              <% [['round_robin', 'Bergiliran — tiap crawl pakai proxy berikutnya'], ['random', 'Acak — tiap crawl pilih proxy secara acak'], ['failover', 'Cadangan — selalu proxy pertama, sisanya hanya saat itu gagal']].forEach(([val, label]) => { %>
+                <option value="<%= val %>" <%= (w.proxy_rotation || 'round_robin') === val ? 'selected' : '' %>><%= label %></option>
+              <% }) %>
+            </select>
+          </div>
+          <% if (isEdit && typeof proxyStatus !== 'undefined' && proxyStatus.length) { %>
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+              <span class="form-label mb-0">Status proxy</span>
+              <a class="small" href="/admin/browser-check?website=<%= encodeURIComponent(w.name) %>" target="_blank" rel="noopener"><i class="bi bi-activity me-1"></i>Cek semua proxy</a>
+            </div>
+            <ul class="list-group list-group-sm small">
+              <% proxyStatus.forEach((s, i) => { %>
+              <li class="list-group-item d-flex justify-content-between gap-2 py-1 px-2">
+                <code class="text-break-all"><%= i + 1 %>. <%= s.display %></code>
+                <span class="text-nowrap">
+                  <% if (s.coolingDown) { %><span class="badge text-bg-danger" title="<%= s.error || '' %>">gagal · istirahat <%= Math.ceil(s.cooldownLeftMs / 60000) %> mnt</span>
+                  <% } else if (s.okAt) { %><span class="badge text-bg-success">OK</span>
+                  <% } else if (s.failedAt) { %><span class="badge text-bg-warning" title="<%= s.error || '' %>">pernah gagal</span>
+                  <% } else { %><span class="badge text-bg-secondary">belum dipakai</span><% } %>
+                </span>
+              </li>
+              <% }) %>
+            </ul>
+            <small class="form-hint">Status sejak server terakhir start. Cache gambar metode Browser ikut lewat proxy; metode Node.js HTTP, Lazy Proxy, dan mode HTTP biasa (JS off) tidak.</small>
+          </div>
+          <% } %>
           <div class="mb-3">
             <label class="form-label" for="user_agent">User Agent <small class="text-body-secondary">(opsional)</small></label>
             <input type="text" id="user_agent" name="user_agent" class="form-control font-monospace" value="<%= w.user_agent || '' %>" placeholder="Kosong = UA bawaan Lightpanda (disarankan)" spellcheck="false">
@@ -104,8 +135,8 @@
             <div class="row g-2">
               <% [
                 ['browser', 'Browser', 'Diunduh oleh Lightpanda dari dalam halaman — lewat proxy, cookie & Referer yang sama dengan halaman.'],
-                ['node', 'Node.js HTTP', 'Server mendownload terpisah dengan header Referer.'],
-                ['proxy', 'Lazy Proxy', 'Di-cache saat gambar pertama kali diakses, bukan saat crawl.'],
+                ['node', 'Node.js HTTP', 'Server mendownload terpisah dengan header Referer — langsung, tanpa proxy.'],
+                ['proxy', 'Lazy Proxy', 'Di-cache saat gambar pertama kali diakses, bukan saat crawl — langsung, tanpa proxy.'],
               ].forEach(([val, title, desc]) => { %>
               <div class="col-md-4">
                 <label class="option-card">

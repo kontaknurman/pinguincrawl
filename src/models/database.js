@@ -136,6 +136,13 @@ function initTables() {
     db.exec("ALTER TABLE websites ADD COLUMN timezone TEXT DEFAULT NULL");
   }
 
+  // Migration: add proxy_rotation column. The proxy column may hold several proxies, one
+  // per line; this says how crawls take turns: round_robin | random | failover
+  const wCols4 = db.prepare("PRAGMA table_info(websites)").all();
+  if (!wCols4.find(c => c.name === 'proxy_rotation')) {
+    db.exec("ALTER TABLE websites ADD COLUMN proxy_rotation TEXT DEFAULT 'round_robin'");
+  }
+
   // Migration: add use_js column to page_configs (1=browser render, 0=simple HTTP)
   const pcCols4 = db.prepare("PRAGMA table_info(page_configs)").all();
   if (!pcCols4.find(c => c.name === 'use_js')) {
@@ -233,18 +240,18 @@ function getWebsiteByName(name) {
   return getDb().prepare('SELECT * FROM websites WHERE name = ?').get(name);
 }
 
-function createWebsite({ name, base_url, proxy, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
+function createWebsite({ name, base_url, proxy, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
   const stmt = getDb().prepare(
-    `INSERT INTO websites (name, base_url, proxy, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO websites (name, base_url, proxy, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  return stmt.run(name, base_url, proxy || null, user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null);
+  return stmt.run(name, base_url, proxy || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null);
 }
 
-function updateWebsite(id, { name, base_url, active, proxy, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
+function updateWebsite(id, { name, base_url, active, proxy, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
   const stmt = getDb().prepare(
-    `UPDATE websites SET name=?, base_url=?, active=?, proxy=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE websites SET name=?, base_url=?, active=?, proxy=?, proxy_rotation=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
   );
-  return stmt.run(name, base_url, active ? 1 : 0, proxy || null, user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
+  return stmt.run(name, base_url, active ? 1 : 0, proxy || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
 }
 
 function updateWebsiteCookies(id, cookies) {

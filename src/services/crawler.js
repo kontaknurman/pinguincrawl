@@ -1,9 +1,13 @@
 const { fetchPage, fetchPageSimple, extractCookies } = require('./browser');
 const db = require('../models/database');
 const { cacheImagesFromPage, cacheImage, cacheImageNode, cacheImageData, cacheImagesNode } = require('./image-proxy');
+const proxyPool = require('./proxy-pool');
 
 // Page types whose crawl never caches images (no cover / chapter / custom-field images)
 const NO_IMAGE_PAGE_TYPES = ['katalog', 'chapter_list'];
+
+// How many other proxies one request may fall back to after a proxy failure
+const MAX_PROXY_SWITCHES = 3;
 
 /**
  * Build options for fetchPage from website + page config.
@@ -11,12 +15,14 @@ const NO_IMAGE_PAGE_TYPES = ['katalog', 'chapter_list'];
 function buildFetchOptions(website, pageConfig) {
   // Per-config proxy override: 0=use website default, 1=force on, 2=force off
   const proxyOverride = pageConfig?.use_proxy ?? 0;
-  let proxy = website.proxy || null;
-  if (proxyOverride === 2) proxy = null;       // force off
-  // proxyOverride 1 (force on) just keeps website.proxy as-is
+  // proxyOverride 1 (force on) just keeps the website's proxies as-is
+  const proxies = proxyOverride === 2 ? [] : proxyPool.parseProxyList(website.proxy);
 
   const options = {
-    proxy,
+    // One per crawl attempt is picked from these in fetchPageAuto
+    proxies,
+    proxyRotation: website.proxy_rotation || 'round_robin',
+    proxyKey: `website:${website.id}`,
     userAgent: website.user_agent || null,
     waitFor: pageConfig?.wait_for || null,
     waitTimeout: pageConfig?.wait_timeout || 30000,
@@ -400,25 +406,47 @@ async function proxyCustomFieldImages(page, customFields, customData, ctx) {
 
 /**
  * Fetch page using Lightpanda (JS rendering) or simple HTTP based on use_js config.
+ *
+ * With proxies, each attempt takes one from the rotation. When an attempt dies because of
+ * its proxy, the next untried proxy gets a go straight away (up to MAX_PROXY_SWITCHES)
+ * without using up a configured retry — a dead proxy in the list shouldn't fail a crawl.
  */
 async function fetchPageAuto(url, options, config) {
   const useJs = config?.use_js !== 0;
   const retryCount = parseInt(db.getSetting('retry_count')) || 0;
   const retryDelay = parseInt(db.getSetting('retry_delay')) || 2000;
+  const proxies = useJs ? (options.proxies || []) : []; // plain HTTP mode has no proxy support
+  let switchesLeft = Math.min(Math.max(proxies.length - 1, 0), MAX_PROXY_SWITCHES);
+  const tried = new Set();
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
+    const proxy = proxyPool.pick(options.proxyKey, proxies, options.proxyRotation, tried);
     try {
       if (useJs) {
-        return await fetchPage(url, options);
+        const result = await fetchPage(url, { ...options, proxy });
+        if (proxy) proxyPool.reportSuccess(proxy);
+        return result;
       }
       return await fetchPageSimple(url, options);
     } catch (err) {
+      if (proxy && err.proxyFailed) {
+        proxyPool.reportFailure(proxy, err.message);
+        tried.add(proxy);
+        if (switchesLeft > 0) {
+          switchesLeft--;
+          attempt--; // same attempt, another proxy
+          console.log(`[Proxy] ${proxyPool.displayOf(proxy)} failed (${err.message.split(' [proxy')[0]}) — trying another proxy`);
+          continue;
+        }
+      }
       // A challenge page is not retried — every attempt would meet the same challenge
       if (err.captchaUnsolved) throw err;
       if (attempt < retryCount) {
         console.log(`[Retry] fetchPageAuto attempt ${attempt + 1}/${retryCount} failed: ${err.message}. Retrying in ${retryDelay}ms...`);
         await new Promise(r => setTimeout(r, retryDelay));
       } else {
+        // Out of proxies too: say so, or it reads as if only the last one was tried
+        if (err.proxyFailed && tried.size > 1) err.message = `All ${tried.size} proxies tried failed — last: ${err.message}`;
         throw err;
       }
     }
