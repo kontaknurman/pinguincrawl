@@ -90,6 +90,15 @@
 
 ---
 
+## 2026-10-26 - UI
+
+**Mistake**: The new Admins page ends with its "Add Admin" button; on a phone the error toast (danger toasts stay until closed) sat right on top of it, so after fixing the error the button could not be tapped. An earlier fix had only lifted toasts above the sticky Save bar — every page without that bar was still exposed.
+**Pattern**: A `position: fixed` overlay at the bottom covers whatever ends up last on a page. Fixing it for one layout leaves the others broken, and a test that submits a form only once never sees it.
+**Rule**: Reserve the overlay's height as bottom space for the whole layout instead of patching single pages. In UI tests on a 390px viewport, submit each new form again after a validation error.
+**Applied**: `src/public/admin.js` `reserveToastSpace()`, `src/public/admin.css` `.app-main`
+
+---
+
 ## 2026-03-20 - Feature Scope
 
 **Mistake**: When user asked for "custom config", implemented only custom JSON response fields. User actually wanted custom page types (new config types + API endpoints), not just custom fields within existing configs.

@@ -13,6 +13,9 @@ services:
       - ./data:/app/data
     environment:
       - PORT=${PORT:-3000}
+      # See .env.example
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - TRUST_PROXY=${TRUST_PROXY:-}
     restart: unless-stopped
     # Docker keeps container output forever by default — cap it so logs can't fill the disk
     logging:

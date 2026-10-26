@@ -1,17 +1,19 @@
 const express = require('express');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const Database = require('better-sqlite3');
 const router = express.Router();
 const db = require('../models/database');
-const { requireAuth, createAuthCookie, clearAuthCookie, resetSessionSecret, create2faPendingCookie, verify2faPendingToken, clear2faPendingCookie } = require('../middleware/auth');
+const { requireAuth, createAuthCookie, clearAuthCookie, create2faPendingCookie, pending2faUser, clear2faPendingCookie } = require('../middleware/auth');
 const OTPAuth = require('otpauth');
 const QRCode = require('qrcode');
 const { clearAllImages } = require('../services/image-proxy');
 const { getActiveBrowserCount } = require('../services/browser');
 const lightpanda = require('../services/lightpanda');
 const proxyPool = require('../services/proxy-pool');
+const loginGuard = require('../services/login-guard');
 const storage = require('../services/storage');
 
 
@@ -37,7 +39,12 @@ const FLASH = {
     api_key: 'API key updated',
     ip_whitelist: 'IP whitelist updated',
     crawl_settings: 'Crawl settings updated',
-    password: 'Password changed successfully',
+    password: 'Password changed — your other devices were logged out',
+    password_set: 'New password saved — welcome!',
+    user_created: 'Admin added — they choose their own password at their first login',
+    user_deleted: 'Admin deleted',
+    user_password_reset: 'Password reset — that admin was logged out everywhere and picks a new password at the next login',
+    user_2fa_reset: '2FA turned off for that admin',
     totp_enabled: '2FA enabled! You will need a code from your authenticator app on every login.',
     totp_disabled: '2FA has been disabled.',
     cache_cleared: 'Image cache cleared: {n} images removed.',
@@ -61,82 +68,123 @@ function flashFromQuery(query) {
   return null;
 }
 
-// scrypt is deliberately slow (~50ms) — don't redo it on every dashboard view
-let defaultPasswordCache = null;
-function isDefaultPassword() {
-  if (defaultPasswordCache === null) {
-    const stored = db.getAdminPassword();
-    defaultPasswordCache = !stored || db.verifyPassword('admin', stored);
-  }
-  return defaultPasswordCache;
-}
-
 function apiBaseUrl(req) {
   return `${req.protocol}://${req.get('host')}`;
 }
 
+// --- Accounts: shared helpers ---
+
+const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+const TOTP_SECRET_RE = /^[A-Z2-7]{16,64}$/;
+
+// A form field as text: the body parser turns name[]=… or name[x]=… into arrays/objects
+const formText = (value) => (typeof value === 'string' ? value : '');
+
+/** Why a new password is not acceptable, or null. Without a confirmation field, pass none. */
+function passwordProblem(password, username, confirm = password) {
+  const pw = formText(password);
+  if (pw.length < db.MIN_PASSWORD_LENGTH) return `Password must be at least ${db.MIN_PASSWORD_LENGTH} characters`;
+  if (pw.length > 200) return 'Password must be at most 200 characters';
+  if (pw !== formText(confirm)) return 'Passwords do not match';
+  if (pw.toLowerCase() === username.toLowerCase()) return 'Password must not be the same as the username';
+  return null;
+}
+
+function tooManyAttempts(waitMs) {
+  const minutes = Math.ceil(waitMs / 60000);
+  return `Too many failed attempts — try again in ${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+/**
+ * Account changes (adding or removing admins, passwords, 2FA) ask for the signed-in admin's
+ * own password again, so a browser left logged in isn't enough to take over accounts.
+ * Wrong guesses count toward the login brake. Returns an error message, or null when right.
+ */
+function reauthProblem(req, password, wrongMessage = 'Your password is wrong') {
+  const waitMs = loginGuard.retryAfterMs(req.ip);
+  if (waitMs) return tooManyAttempts(waitMs);
+  if (db.verifyPassword(formText(password), req.user.password_hash)) return null;
+  loginGuard.recordFailure(req.ip);
+  return wrongMessage;
+}
+
+/** What views may see of an account: no password hash, TOTP secret or session version. */
+function publicUser(user) {
+  const { password_hash, totp_secret, session_version, ...rest } = user;
+  return rest;
+}
+
+function totpFor(username, secret) {
+  return new OTPAuth.TOTP({
+    issuer: 'PinguinCrawl',
+    label: username,
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+    secret: typeof secret === 'string' ? OTPAuth.Secret.fromBase32(secret) : secret,
+  });
+}
+
+// Unknown usernames are checked against this, so they take as long as a wrong password
+// and response time doesn't reveal which usernames exist
+let dummyHash = null;
+function passwordMatches(user, password) {
+  if (!dummyHash) dummyHash = db.hashPassword(crypto.randomBytes(16).toString('hex'));
+  return db.verifyPassword(formText(password), user ? user.password_hash : dummyHash) && !!user;
+}
+
 // --- Login (public) ---
+function loginLocals(extra = {}) {
+  // Until the first login replaces it, the only account of a fresh install is admin/admin
+  const users = db.getUsers();
+  const defaultLogin = users.length === 1 && users[0].username === 'admin' && !!users[0].must_change_password && !users[0].created_by;
+  return { layout: 'layouts/minimal', page: 'login', error: null, username: '', defaultLogin, ...extra };
+}
+
 router.get('/login', (req, res) => {
-  // Check if using default password
-  const stored = db.getAdminPassword();
-  const isDefault = !stored || db.verifyPassword('admin', stored);
-  res.render('pages/login', { layout: 'layouts/minimal', page: 'login', isDefault });
+  res.render('pages/login', loginLocals());
 });
 
+function completeLogin(req, res, user) {
+  loginGuard.reset(req.ip);
+  db.touchUserLogin(user.id);
+  createAuthCookie(res, req, user);
+  res.redirect(user.must_change_password ? '/admin/account/password' : '/admin');
+}
+
 router.post('/login', express.urlencoded({ extended: true }), (req, res) => {
-  // Ensure default password exists
-  if (!db.getAdminPassword()) {
-    db.setAdminPassword('admin');
+  const waitMs = loginGuard.retryAfterMs(req.ip);
+  if (waitMs) {
+    return res.status(429).render('pages/login', loginLocals({ error: tooManyAttempts(waitMs) }));
   }
+  const { username, password, totp_code } = req.body;
 
-  const { password, totp_code } = req.body;
-  const stored = db.getAdminPassword();
-  const totpEnabled = db.getSetting('totp_enabled') === '1';
-
-  // Step 2: TOTP verification (password already verified via signed cookie)
-  if (totp_code && totpEnabled && verify2faPendingToken(req)) {
-    const totpSecret = db.getSetting('totp_secret');
-    if (!totpSecret) {
-      clear2faPendingCookie(res);
-      createAuthCookie(res, req);
-      return res.redirect('/admin');
+  // Step 2: 2FA code — the password was accepted moments ago (signed pending cookie)
+  if (totp_code) {
+    const user = pending2faUser(req);
+    if (!user || !user.totp_enabled) {
+      return res.render('pages/login', loginLocals({ error: 'Login expired — enter your username and password again' }));
     }
-    const totp = new OTPAuth.TOTP({
-      issuer: 'PinguinCrawl',
-      label: 'Admin',
-      algorithm: 'SHA1',
-      digits: 6,
-      period: 30,
-      secret: OTPAuth.Secret.fromBase32(totpSecret),
-    });
-    const valid = totp.validate({ token: totp_code, window: 1 });
-    if (valid === null) {
-      return res.render('pages/2fa-verify', {
-        layout: 'layouts/minimal', page: 'login',
-        error: 'Invalid authenticator code',
-      });
+    if (totpFor(user.username, user.totp_secret).validate({ token: String(totp_code), window: 1 }) === null) {
+      loginGuard.recordFailure(req.ip);
+      return res.render('pages/2fa-verify', { layout: 'layouts/minimal', page: 'login', error: 'Invalid authenticator code' });
     }
     clear2faPendingCookie(res);
-    createAuthCookie(res, req);
-    return res.redirect('/admin');
+    return completeLogin(req, res, user);
   }
 
-  // Step 1: Password verification
-  if (password && db.verifyPassword(password, stored)) {
-    if (totpEnabled) {
-      // Password OK, set signed pending cookie and show 2FA page
-      create2faPendingCookie(res, req);
-      return res.render('pages/2fa-verify', {
-        layout: 'layouts/minimal', page: 'login',
-        error: null,
-      });
-    }
-    createAuthCookie(res, req);
-    return res.redirect('/admin');
+  // Step 1: username + password
+  const name = formText(username).trim().toLowerCase();
+  const user = name ? db.getUserByUsername(name) : null;
+  if (!passwordMatches(user, password)) {
+    loginGuard.recordFailure(req.ip);
+    return res.render('pages/login', loginLocals({ error: 'Wrong username or password', username: name }));
   }
-
-  const isDefault = db.verifyPassword('admin', stored);
-  res.render('pages/login', { layout: 'layouts/minimal', page: 'login', error: 'Wrong password', isDefault });
+  if (user.totp_enabled && user.totp_secret) {
+    create2faPendingCookie(res, req, user);
+    return res.render('pages/2fa-verify', { layout: 'layouts/minimal', page: 'login', error: null });
+  }
+  completeLogin(req, res, user);
 });
 
 // --- Logout ---
@@ -170,7 +218,6 @@ router.get('/', (req, res) => {
     logStats: db.getApiLogStats(),
     cache: db.getImageCacheTotals(),
     filesystems: storage.filesystems(),
-    isDefaultPassword: isDefaultPassword(),
     apiKeySet: !!db.getSetting('api_key'),
     apiBase: apiBaseUrl(req),
   });
@@ -188,8 +235,9 @@ function settingsLocals(req, extra = {}) {
     challengeDetection: db.getSetting('challenge_detection') !== '0',
     lightpanda: { executable: lightpanda.executablePath(), version: lightpanda.cachedVersion() },
     websites: db.getAllWebsites(),
-    totpEnabled: db.getSetting('totp_enabled') === '1',
-    isDefaultPassword: isDefaultPassword(),
+    username: req.user.username,
+    totpEnabled: !!req.user.totp_enabled,
+    minPassword: db.MIN_PASSWORD_LENGTH,
     clientIp: (req.ip || '').replace(/^::ffff:/, ''),
     pwError: null,
     totpError: null,
@@ -211,25 +259,37 @@ router.get('/settings', (req, res) => {
   res.render('pages/settings', settingsLocals(req));
 });
 
-// --- Change Password ---
+// --- Change own password ---
+// Also the page a default ("admin") or admin-issued password leads to: until it is
+// replaced, requireAuth sends every other admin page here.
+function accountPasswordLocals(req, extra = {}) {
+  return { layout: 'layouts/minimal', page: 'account', username: req.user.username, minPassword: db.MIN_PASSWORD_LENGTH, error: null, ...extra };
+}
+
+router.get('/account/password', (req, res) => {
+  if (!req.user.must_change_password) return res.redirect('/admin/settings#security');
+  res.render('pages/account-password', accountPasswordLocals(req));
+});
+
 router.post('/change-password', express.urlencoded({ extended: true }), (req, res) => {
-  const { current_password, new_password, confirm_password } = req.body;
-  const stored = db.getAdminPassword();
+  const { current_password, confirm_password } = req.body;
+  const new_password = formText(req.body.new_password);
+  const forced = !!req.user.must_change_password;
+  const fail = (message) => (forced
+    ? res.render('pages/account-password', accountPasswordLocals(req, { error: message }))
+    : renderSettingsError(req, res, 'security', 'pwError', message));
 
-  if (!db.verifyPassword(String(current_password || ''), stored)) {
-    return renderSettingsError(req, res, 'security', 'pwError', 'Current password is wrong');
-  }
-  if (!new_password || new_password.length < 4) {
-    return renderSettingsError(req, res, 'security', 'pwError', 'New password must be at least 4 characters');
-  }
-  if (new_password !== confirm_password) {
-    return renderSettingsError(req, res, 'security', 'pwError', 'Passwords do not match');
+  const problem = reauthProblem(req, current_password, 'Current password is wrong')
+    || passwordProblem(new_password, req.user.username, confirm_password);
+  if (problem) return fail(problem);
+  if (db.verifyPassword(new_password, req.user.password_hash)) {
+    return fail('The new password must be different from the current one');
   }
 
-  db.setAdminPassword(new_password);
-  defaultPasswordCache = null;
-  createAuthCookie(res, req);
-  res.redirect('/admin/settings?ok=password#security');
+  db.setUserPassword(req.user.id, new_password);
+  // The new session version logs out every other device; this one gets a fresh cookie
+  createAuthCookie(res, req, db.getUserById(req.user.id));
+  res.redirect(forced ? '/admin?ok=password_set' : '/admin/settings?ok=password#security');
 });
 
 // --- API Key Management ---
@@ -613,89 +673,140 @@ router.get('/browser-check', async (req, res) => {
   }
 });
 
-// --- Logout from All Devices ---
+// --- Logout from all devices (this account only) ---
 router.post('/logout-all', (req, res) => {
-  resetSessionSecret();
+  db.bumpSessionVersion(req.user.id);
   clearAuthCookie(res);
   res.redirect('/admin/login');
 });
 
-// --- 2FA Setup ---
-router.get('/2fa/setup', async (req, res) => {
-  const totpEnabled = db.getSetting('totp_enabled') === '1';
-  const secret = new OTPAuth.Secret({ size: 20 });
-  const totp = new OTPAuth.TOTP({
-    issuer: 'PinguinCrawl',
-    label: 'Admin',
-    algorithm: 'SHA1',
-    digits: 6,
-    period: 30,
-    secret,
-  });
-  const uri = totp.toString();
+// --- 2FA (per admin) ---
+async function twoFactorSetupLocals(req, secret, extra = {}) {
+  const uri = totpFor(req.user.username, secret).toString();
   let qrDataUrl = '';
   try {
     qrDataUrl = await QRCode.toDataURL(uri);
-  } catch { /* QR generation failed */ }
+  } catch { /* QR generation failed — the page shows the secret too */ }
+  return { page: 'settings', secret, qrDataUrl, uri, totpEnabled: !!req.user.totp_enabled, error: null, ...extra };
+}
 
-  res.render('pages/2fa-setup', {
-    page: 'settings',
-    secret: secret.base32,
-    qrDataUrl,
-    uri,
-    totpEnabled,
-    error: null,
-  });
+router.get('/2fa/setup', async (req, res, next) => {
+  try {
+    res.render('pages/2fa-setup', await twoFactorSetupLocals(req, new OTPAuth.Secret({ size: 20 }).base32));
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.post('/2fa/enable', express.urlencoded({ extended: true }), async (req, res) => {
-  const { secret, totp_code } = req.body;
-  if (!secret || !totp_code) {
-    return res.redirect('/admin/2fa/setup');
+router.post('/2fa/enable', express.urlencoded({ extended: true }), async (req, res, next) => {
+  try {
+    const secret = formText(req.body.secret);
+    const totpCode = formText(req.body.totp_code);
+    // Already on: turning it off first takes the password, so a session alone can't swap the secret
+    if (req.user.totp_enabled || !TOTP_SECRET_RE.test(secret) || !totpCode) {
+      return res.redirect('/admin/2fa/setup');
+    }
+    const problem = reauthProblem(req, req.body.current_password)
+      || (totpFor(req.user.username, secret).validate({ token: totpCode, window: 1 }) === null ? 'Invalid code. Please try again.' : null);
+    if (problem) {
+      return res.render('pages/2fa-setup', await twoFactorSetupLocals(req, secret, {
+        error: problem, flash: { type: 'danger', text: problem },
+      }));
+    }
+    db.setUserTotp(req.user.id, secret);
+    res.redirect('/admin/settings?ok=totp_enabled#security');
+  } catch (err) {
+    next(err);
   }
-
-  const totp = new OTPAuth.TOTP({
-    issuer: 'PinguinCrawl',
-    label: 'Admin',
-    algorithm: 'SHA1',
-    digits: 6,
-    period: 30,
-    secret: OTPAuth.Secret.fromBase32(secret),
-  });
-
-  const uri = totp.toString();
-  let qrDataUrl = '';
-  try { qrDataUrl = await QRCode.toDataURL(uri); } catch {}
-
-  const valid = totp.validate({ token: totp_code, window: 1 });
-  if (valid === null) {
-    return res.render('pages/2fa-setup', {
-      page: 'settings', secret, qrDataUrl, uri,
-      totpEnabled: db.getSetting('totp_enabled') === '1',
-      error: 'Invalid code. Please try again.',
-      flash: { type: 'danger', text: 'Invalid code. Please try again.' },
-    });
-  }
-
-  // Save secret and enable 2FA
-  db.setSetting('totp_secret', secret);
-  db.setSetting('totp_enabled', '1');
-
-  res.redirect('/admin/settings?ok=totp_enabled#security');
 });
 
 router.post('/2fa/disable', express.urlencoded({ extended: true }), (req, res) => {
-  const { current_password } = req.body;
-  const stored = db.getAdminPassword();
-
-  if (!db.verifyPassword(String(current_password || ''), stored)) {
-    return renderSettingsError(req, res, 'security', 'totpError', 'Wrong password. Cannot disable 2FA.');
-  }
-
-  db.setSetting('totp_enabled', '0');
-  db.setSetting('totp_secret', '');
-
+  const problem = reauthProblem(req, req.body.current_password, 'Wrong password. Cannot disable 2FA.');
+  if (problem) return renderSettingsError(req, res, 'security', 'totpError', problem);
+  db.setUserTotp(req.user.id, null);
   res.redirect('/admin/settings?ok=totp_disabled#security');
+});
+
+// --- Admins ---
+// Every admin has full access, managing the other admins included. Nobody can remove or
+// reset their own account here (Settings → Security has their password, 2FA and sessions),
+// so there is always at least one admin left.
+function usersLocals(req, extra = {}) {
+  return { page: 'users', users: db.getUsers(), me: req.user.id, minPassword: db.MIN_PASSWORD_LENGTH, error: null, form: {}, ...extra };
+}
+
+router.get('/users', (req, res) => {
+  res.render('pages/users', usersLocals(req));
+});
+
+router.post('/users', express.urlencoded({ extended: true }), (req, res) => {
+  const username = formText(req.body.username).trim().toLowerCase();
+  const password = formText(req.body.password);
+  const fail = (message) => res.render('pages/users', usersLocals(req, {
+    error: message, form: { username }, flash: { type: 'danger', text: message },
+  }));
+
+  if (!USERNAME_RE.test(username)) {
+    return fail('Username: 3–32 characters — lowercase letters, numbers, dot, dash or underscore, starting with a letter or number');
+  }
+  const problem = passwordProblem(password, username) || reauthProblem(req, req.body.your_password);
+  if (problem) return fail(problem);
+  try {
+    // A temporary password: the new admin has to pick their own at the first login
+    db.createUser({ username, password, mustChange: true, createdBy: req.user.username });
+  } catch (err) {
+    return fail(err.message.includes('UNIQUE') ? `An admin named "${username}" already exists` : err.message);
+  }
+  res.redirect('/admin/users?ok=user_created');
+});
+
+// Another admin's account, or null — your own isn't managed from here
+function otherUser(req) {
+  const user = db.getUserById(parseInt(req.params.id) || 0);
+  return user && user.id !== req.user.id ? user : null;
+}
+
+function renderManage(req, res, target, error = null) {
+  res.render('pages/user-manage', {
+    page: 'users', target: publicUser(target), minPassword: db.MIN_PASSWORD_LENGTH, error,
+    ...(error ? { flash: { type: 'danger', text: error } } : {}),
+  });
+}
+
+router.get('/users/:id', (req, res) => {
+  const target = otherUser(req);
+  if (!target) return res.redirect('/admin/users');
+  renderManage(req, res, target);
+});
+
+// Forgotten password: a new temporary one; that admin is logged out everywhere
+router.post('/users/:id/password', express.urlencoded({ extended: true }), (req, res) => {
+  const target = otherUser(req);
+  if (!target) return res.redirect('/admin/users');
+  const password = formText(req.body.password);
+  const problem = passwordProblem(password, target.username) || reauthProblem(req, req.body.your_password);
+  if (problem) return renderManage(req, res, target, problem);
+  db.setUserPassword(target.id, password, { mustChange: true });
+  res.redirect('/admin/users?ok=user_password_reset');
+});
+
+// Lost authenticator: the next login takes the password only
+router.post('/users/:id/2fa/reset', express.urlencoded({ extended: true }), (req, res) => {
+  const target = otherUser(req);
+  if (!target) return res.redirect('/admin/users');
+  const problem = reauthProblem(req, req.body.your_password);
+  if (problem) return renderManage(req, res, target, problem);
+  db.setUserTotp(target.id, null);
+  res.redirect('/admin/users?ok=user_2fa_reset');
+});
+
+router.post('/users/:id/delete', express.urlencoded({ extended: true }), (req, res) => {
+  const target = otherUser(req);
+  if (!target) return res.redirect('/admin/users');
+  const problem = reauthProblem(req, req.body.your_password);
+  if (problem) return renderManage(req, res, target, problem);
+  db.deleteUser(target.id); // their session cookies stop working with the row gone
+  res.redirect('/admin/users?ok=user_deleted');
 });
 
 // --- Storage (disk usage + cleanup) ---
@@ -802,9 +913,8 @@ router.post('/restore', upload.single('dbfile'), (req, res) => {
       if (fs.existsSync(f)) fs.unlinkSync(f);
     }
 
-    // The restored DB may have a different password (and session secret — the next
-    // request may need a fresh login), so render directly instead of redirecting
-    defaultPasswordCache = null;
+    // The restored DB has its own admins (and session secret — the next request may need
+    // a fresh login), so render directly instead of redirecting
     res.render('pages/settings', settingsLocals(req, {
       focusSection: 'backup',
       flash: { type: 'success', text: 'Database restored successfully' },

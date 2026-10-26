@@ -13,7 +13,9 @@ body {
 /* ---------- App shell ---------- */
 
 .app-shell { display: block; }
-.app-main { min-width: 0; }
+/* --ck-toast-space is the height of the visible toasts (admin.js): room to scroll the last
+   button of a page above them, since an error toast stays until closed */
+.app-main { min-width: 0; padding-bottom: var(--ck-toast-space, 0px); }
 
 .offcanvas-lg { --bs-offcanvas-width: 280px; --bs-offcanvas-bg: var(--bs-tertiary-bg); }
 

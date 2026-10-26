@@ -1,0 +1,76 @@
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="/admin/users">Admins</a></li>
+    <li class="breadcrumb-item active" aria-current="page"><%= target.username %></li>
+  </ol>
+</nav>
+
+<div class="page-header">
+  <div class="min-w-0">
+    <h1 class="text-break"><i class="bi bi-person-circle me-2"></i><%= target.username %></h1>
+    <p class="page-subtitle d-flex flex-wrap gap-2 align-items-center">
+      <% if (target.totp_enabled) { %><span class="badge rounded-pill text-bg-success"><i class="bi bi-shield-check me-1"></i>2FA aktif</span><% } else { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">tanpa 2FA</span><% } %>
+      <% if (target.must_change_password) { %><span class="badge rounded-pill text-bg-warning">belum ganti password</span><% } %>
+      <span>Login terakhir: <% if (target.last_login_at) { %><time data-utc="<%= target.last_login_at %>" data-relative><%= target.last_login_at %> UTC</time><% } else { %>belum pernah<% } %></span>
+      <% if (target.created_by) { %><span>· ditambahkan oleh <%= target.created_by %></span><% } %>
+    </p>
+  </div>
+</div>
+
+<% if (error) { %>
+  <div class="alert alert-danger py-2"><i class="bi bi-exclamation-octagon me-1"></i><%= error %></div>
+<% } %>
+<p class="small text-body-secondary">Setiap aksi di bawah meminta password kamu sendiri.</p>
+
+<div class="row g-4">
+  <div class="col-lg-6">
+    <section class="card h-100" id="reset-password">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-key me-1"></i>Reset password</h2></div>
+      <div class="card-body">
+        <p class="small text-body-secondary">Untuk admin yang lupa password. Dia langsung keluar dari semua perangkat, lalu login dengan password sementara ini dan wajib membuat password baru.</p>
+        <form method="POST" action="/admin/users/<%= target.id %>/password">
+          <label class="form-label small" for="reset_password">Password sementara</label>
+          <div class="input-group mb-3">
+            <input type="password" class="form-control font-monospace" id="reset_password" name="password" required minlength="<%= minPassword %>" maxlength="200" autocomplete="new-password">
+            <button class="btn btn-outline-secondary" type="button" data-generate-password="#reset_password" title="Buat password acak" aria-label="Buat password acak"><i class="bi bi-shuffle"></i></button>
+            <button class="btn btn-outline-secondary" type="button" data-toggle-password="#reset_password" aria-label="Tampilkan password"><i class="bi bi-eye"></i></button>
+            <button class="btn btn-outline-secondary" type="button" data-copy-target="#reset_password" title="Copy" aria-label="Copy password"><i class="bi bi-clipboard"></i></button>
+          </div>
+          <label class="form-label small" for="reset_your_password">Password kamu</label>
+          <input type="password" class="form-control mb-3" id="reset_your_password" name="your_password" required autocomplete="current-password">
+          <button type="submit" class="btn btn-warning"><i class="bi bi-key me-1"></i>Reset Password</button>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div class="col-lg-6 d-flex flex-column gap-4">
+    <% if (target.totp_enabled) { %>
+    <section class="card" id="reset-2fa">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-shield-x me-1"></i>Reset 2FA</h2></div>
+      <div class="card-body">
+        <p class="small text-body-secondary">Untuk admin yang kehilangan aplikasi authenticator. Login berikutnya cukup dengan password; 2FA bisa dipasang lagi dari Settings.</p>
+        <form method="POST" action="/admin/users/<%= target.id %>/2fa/reset" data-confirm="Matikan 2FA untuk <%= target.username %>?">
+          <div class="input-group">
+            <input type="password" class="form-control" name="your_password" placeholder="Password kamu" required autocomplete="current-password" aria-label="Password kamu">
+            <button type="submit" class="btn btn-outline-warning"><i class="bi bi-shield-x me-1"></i>Reset 2FA</button>
+          </div>
+        </form>
+      </div>
+    </section>
+    <% } %>
+
+    <section class="card border-danger-subtle" id="delete">
+      <div class="card-header"><h2 class="section-title text-danger"><i class="bi bi-trash me-1"></i>Hapus admin</h2></div>
+      <div class="card-body">
+        <p class="small text-body-secondary">Akun ini tidak bisa login lagi dan semua sesinya langsung berakhir. Website, config, dan log tidak terpengaruh.</p>
+        <form method="POST" action="/admin/users/<%= target.id %>/delete" data-confirm="Hapus admin <%= target.username %>? Tidak bisa dibatalkan.">
+          <div class="input-group">
+            <input type="password" class="form-control" name="your_password" placeholder="Password kamu" required autocomplete="current-password" aria-label="Password kamu">
+            <button type="submit" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete Admin</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>

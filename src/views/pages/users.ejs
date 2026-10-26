@@ -1,0 +1,80 @@
+<div class="page-header">
+  <div>
+    <h1>Admins</h1>
+    <p class="page-subtitle">Akun yang bisa login ke panel ini. Semua admin punya akses penuh — termasuk menambah, me-reset, dan menghapus admin lain.</p>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-xl-7">
+    <section class="card">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-people me-1"></i>Daftar admin <span class="badge rounded-pill text-bg-secondary ms-1"><%= users.length %></span></h2></div>
+      <div class="list-group list-group-flush" id="userList">
+        <% users.forEach(u => { const isMe = u.id === me; %>
+        <div class="list-group-item py-3">
+          <div class="d-flex flex-column flex-sm-row gap-2 gap-sm-3 align-items-sm-center">
+            <div class="min-w-0 flex-grow-1">
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="fw-semibold text-break"><i class="bi bi-person-circle me-1"></i><%= u.username %></span>
+                <% if (isMe) { %><span class="badge rounded-pill text-bg-primary">kamu</span><% } %>
+                <% if (u.totp_enabled) { %><span class="badge rounded-pill text-bg-success"><i class="bi bi-shield-check me-1"></i>2FA</span><% } else { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">tanpa 2FA</span><% } %>
+                <% if (u.must_change_password) { %><span class="badge rounded-pill text-bg-warning" title="Masih memakai password default/sementara">belum ganti password</span><% } %>
+              </div>
+              <div class="small text-body-secondary mt-1">
+                Login terakhir: <% if (u.last_login_at) { %><time data-utc="<%= u.last_login_at %>" data-relative><%= u.last_login_at %> UTC</time><% } else { %>belum pernah<% } %>
+                <% if (u.created_by) { %>· ditambahkan oleh <%= u.created_by %><% } %>
+              </div>
+            </div>
+            <div class="flex-shrink-0">
+              <% if (isMe) { %>
+                <a href="/admin/settings#security" class="btn btn-sm btn-outline-secondary"><i class="bi bi-person-gear me-1"></i>Akun saya</a>
+              <% } else { %>
+                <a href="/admin/users/<%= u.id %>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-sliders me-1"></i>Kelola</a>
+              <% } %>
+            </div>
+          </div>
+        </div>
+        <% }) %>
+      </div>
+    </section>
+  </div>
+
+  <div class="col-xl-5">
+    <section class="card" id="add">
+      <div class="card-header"><h2 class="section-title"><i class="bi bi-person-plus me-1"></i>Tambah admin</h2></div>
+      <div class="card-body">
+        <% if (error) { %><div class="alert alert-danger py-2 small"><%= error %></div><% } %>
+        <form method="POST" action="/admin/users">
+          <div class="mb-3">
+            <label class="form-label" for="new_username">Username</label>
+            <input type="text" class="form-control" id="new_username" name="username" value="<%= form.username || '' %>" required minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{2,31}" autocomplete="off" autocapitalize="none" spellcheck="false">
+            <small class="form-hint">3–32 karakter: huruf kecil, angka, titik, strip, atau underscore.</small>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="new_password">Password sementara</label>
+            <div class="input-group">
+              <input type="password" class="form-control font-monospace" id="new_password" name="password" required minlength="<%= minPassword %>" maxlength="200" autocomplete="new-password">
+              <button class="btn btn-outline-secondary" type="button" data-generate-password="#new_password" title="Buat password acak" aria-label="Buat password acak"><i class="bi bi-shuffle"></i></button>
+              <button class="btn btn-outline-secondary" type="button" data-toggle-password="#new_password" aria-label="Tampilkan password"><i class="bi bi-eye"></i></button>
+              <button class="btn btn-outline-secondary" type="button" data-copy-target="#new_password" title="Copy" aria-label="Copy password"><i class="bi bi-clipboard"></i></button>
+            </div>
+            <small class="form-hint">Minimal <%= minPassword %> karakter. Berikan username dan password ini ke admin baru — saat login pertama dia wajib menggantinya dengan password sendiri.</small>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="your_password">Password kamu</label>
+            <input type="password" class="form-control" id="your_password" name="your_password" required autocomplete="current-password">
+            <small class="form-hint">Konfirmasi bahwa ini memang kamu.</small>
+          </div>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus me-1"></i>Add Admin</button>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>
+
+<% if (error) { %>
+<script>
+  // On a phone the form sits below the list — bring the error into view
+  document.getElementById('add').scrollIntoView({ block: 'start' });
+</script>
+<% } %>

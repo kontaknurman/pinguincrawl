@@ -16,12 +16,6 @@
   </div>
 </div>
 
-<% if (isDefaultPassword) { %>
-<div class="alert alert-warning d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
-  <div class="flex-grow-1"><i class="bi bi-shield-exclamation me-1"></i>Password admin masih default (<code>admin</code>). Ganti sekarang supaya panel ini tidak bisa dibuka orang lain.</div>
-  <a href="/admin/settings#security" class="btn btn-sm btn-warning flex-shrink-0">Ganti password</a>
-</div>
-<% } %>
 <% if (lowFs) { %>
 <div class="alert alert-danger d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
   <div class="flex-grow-1">

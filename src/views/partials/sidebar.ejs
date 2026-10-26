@@ -40,6 +40,11 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link <%= _active(['users']) %>" href="/admin/users" <%- _current(['users']) %>>
+            <i class="bi bi-people"></i> Admins
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link <%= _active(['settings']) %>" href="/admin/settings" <%- _current(['settings']) %>>
             <i class="bi bi-gear"></i> Settings
           </a>
@@ -59,6 +64,9 @@
       </details>
 
       <div class="sidebar-footer">
+        <% if (typeof currentUser !== 'undefined' && currentUser) { %>
+          <a href="/admin/settings#security" class="d-block small text-body-secondary text-decoration-none text-truncate mb-2" title="Login sebagai <%= currentUser.username %>"><i class="bi bi-person-circle me-1"></i><%= currentUser.username %></a>
+        <% } %>
         <div class="d-grid gap-2">
           <button type="button" class="btn btn-sm btn-outline-secondary" data-theme-toggle>
             <i data-theme-icon class="bi bi-sun"></i> <span data-theme-label>Light mode</span>

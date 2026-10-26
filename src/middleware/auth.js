@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 const db = require('../models/database');
 
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PENDING_2FA_MAX_AGE_MS = 5 * 60 * 1000;
+
 // Generate a random secret on first run, persist in settings
 function getSessionSecret() {
   let secret = db.getSetting('session_secret');
@@ -44,66 +47,57 @@ function parseCookies(header) {
   return cookies;
 }
 
-// Regenerate session secret — invalidates ALL existing tokens (logout all devices)
-function resetSessionSecret() {
-  const secret = crypto.randomBytes(32).toString('hex');
-  db.setSetting('session_secret', secret);
-  return secret;
+/**
+ * The user a signed cookie belongs to, or null. The token carries the user id and that
+ * user's session_version: a new password, "logout everywhere" or deleting the account
+ * changes or removes it, which ends every session of that account (and only that one).
+ */
+function userFromCookie(req, name, purpose, maxAgeMs) {
+  const token = parseCookies(req.headers.cookie)[name];
+  if (!token) return null;
+  const payload = verifyToken(token, getSessionSecret());
+  if (!payload || payload.purpose !== purpose || !payload.iat || Date.now() - payload.iat >= maxAgeMs) return null;
+  const user = db.getUserById(payload.uid);
+  return user && user.session_version === payload.sv ? user : null;
 }
+
+// Pages a user with a default or admin-issued password may still reach
+const ALLOWED_WHILE_MUST_CHANGE = new Set(['/account/password', '/change-password']);
 
 // Auth middleware — protects admin routes
 function requireAuth(req, res, next) {
-  // Ensure default password exists
-  if (!db.getAdminPassword()) {
-    db.setAdminPassword('admin');
+  const user = userFromCookie(req, 'auth_token', 'session', SESSION_MAX_AGE_MS);
+  if (!user) return res.redirect('/admin/login');
+  req.user = user; // full row, server-side only
+  res.locals.currentUser = { id: user.id, username: user.username };
+  if (user.must_change_password && !ALLOWED_WHILE_MUST_CHANGE.has(req.path)) {
+    return res.redirect('/admin/account/password');
   }
-
-  const cookies = parseCookies(req.headers.cookie);
-  const token = cookies.auth_token;
-
-  if (token) {
-    const secret = getSessionSecret();
-    const payload = verifyToken(token, secret);
-    // Verify role and token expiry (24 hours)
-    if (payload && payload.role === 'admin' && payload.iat && (Date.now() - payload.iat) < 86400000) {
-      req.isAdmin = true;
-      return next();
-    }
-  }
-
-  // Not authenticated — redirect to login
-  res.redirect('/admin/login');
+  next();
 }
 
 // Create auth cookie
-function createAuthCookie(res, req) {
-  const secret = getSessionSecret();
-  const token = signToken({ role: 'admin', iat: Date.now() }, secret);
+function createAuthCookie(res, req, user) {
+  const token = signToken({ purpose: 'session', uid: user.id, sv: user.session_version, iat: Date.now() }, getSessionSecret());
   const secure = req && req.secure ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `auth_token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400${secure}`);
+  res.appendHeader('Set-Cookie', `auth_token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400${secure}`);
 }
 
 // Clear auth cookie
 function clearAuthCookie(res) {
-  res.setHeader('Set-Cookie', 'auth_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0');
+  res.appendHeader('Set-Cookie', 'auth_token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0');
 }
 
-// Create a short-lived 2FA pending token (5 min expiry, HttpOnly cookie)
-function create2faPendingCookie(res, req) {
-  const secret = getSessionSecret();
-  const token = signToken({ purpose: '2fa_pending', iat: Date.now() }, secret);
+// Create a short-lived 2FA pending token (5 min expiry, HttpOnly cookie) for this user
+function create2faPendingCookie(res, req, user) {
+  const token = signToken({ purpose: '2fa_pending', uid: user.id, sv: user.session_version, iat: Date.now() }, getSessionSecret());
   const secure = req && req.secure ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `2fa_pending=${token}; HttpOnly; Path=/admin/login; SameSite=Strict; Max-Age=300${secure}`);
+  res.appendHeader('Set-Cookie', `2fa_pending=${token}; HttpOnly; Path=/admin/login; SameSite=Strict; Max-Age=300${secure}`);
 }
 
-// Verify 2FA pending token (valid for 5 minutes)
-function verify2faPendingToken(req) {
-  const cookies = parseCookies(req.headers.cookie);
-  const token = cookies['2fa_pending'];
-  if (!token) return false;
-  const secret = getSessionSecret();
-  const payload = verifyToken(token, secret);
-  return payload && payload.purpose === '2fa_pending' && payload.iat && (Date.now() - payload.iat) < 300000;
+// The user whose password was accepted in the last 5 minutes, waiting for their 2FA code
+function pending2faUser(req) {
+  return userFromCookie(req, '2fa_pending', '2fa_pending', PENDING_2FA_MAX_AGE_MS);
 }
 
 // Clear 2FA pending cookie
@@ -111,4 +105,4 @@ function clear2faPendingCookie(res) {
   res.appendHeader('Set-Cookie', '2fa_pending=; HttpOnly; Path=/admin/login; SameSite=Strict; Max-Age=0');
 }
 
-module.exports = { requireAuth, createAuthCookie, clearAuthCookie, resetSessionSecret, create2faPendingCookie, verify2faPendingToken, clear2faPendingCookie };
+module.exports = { requireAuth, createAuthCookie, clearAuthCookie, create2faPendingCookie, pending2faUser, clear2faPendingCookie };

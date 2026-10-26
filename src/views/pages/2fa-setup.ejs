@@ -45,11 +45,14 @@
       <div class="card h-100">
         <div class="card-body">
           <h2 class="h6"><span class="badge text-bg-primary me-1">2</span> Verifikasi kode</h2>
-          <p class="text-body-secondary small">Masukkan 6 digit kode dari aplikasi untuk mengaktifkan 2FA:</p>
+          <p class="text-body-secondary small">Masukkan 6 digit kode dari aplikasi dan password kamu untuk mengaktifkan 2FA:</p>
           <form method="POST" action="/admin/2fa/enable">
             <input type="hidden" name="secret" value="<%= secret %>">
             <div class="mb-3">
               <input type="text" class="form-control font-monospace otp-input" name="totp_code" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required autocomplete="one-time-code" inputmode="numeric" aria-label="Kode authenticator">
+            </div>
+            <div class="mb-3">
+              <input type="password" class="form-control" name="current_password" placeholder="Password kamu" required autocomplete="current-password" aria-label="Password kamu">
             </div>
             <button type="submit" class="btn btn-primary w-100">Enable 2FA</button>
           </form>

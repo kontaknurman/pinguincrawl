@@ -13,18 +13,22 @@
 
       <form method="POST" action="/admin/login">
         <div class="mb-3">
+          <label for="username" class="form-label">Username</label>
+          <input type="text" class="form-control" id="username" name="username" value="<%= username %>" required <%= username ? '' : 'autofocus' %> autocomplete="username" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="mb-3">
           <label for="password" class="form-label">Password</label>
           <div class="input-group">
-            <input type="password" class="form-control" id="password" name="password" required autofocus autocomplete="current-password">
+            <input type="password" class="form-control" id="password" name="password" required <%= username ? 'autofocus' : '' %> autocomplete="current-password">
             <button class="btn btn-outline-secondary" type="button" data-toggle-password="#password" aria-label="Tampilkan password"><i class="bi bi-eye"></i></button>
           </div>
         </div>
         <button type="submit" class="btn btn-primary w-100"><i class="bi bi-box-arrow-in-right me-1"></i>Login</button>
       </form>
 
-      <% if (typeof isDefault !== 'undefined' && isDefault) { %>
+      <% if (defaultLogin) { %>
         <div class="alert alert-warning mt-3 py-2 mb-0 small">
-          Default password: <code>admin</code> — ganti setelah login (Settings → Keamanan).
+          Login pertama: username <code>admin</code>, password <code>admin</code> — setelah masuk kamu langsung diminta membuat password baru.
         </div>
       <% } %>
     </div>

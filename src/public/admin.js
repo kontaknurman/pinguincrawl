@@ -30,10 +30,19 @@
     showToast(el, type);
   }
 
+  // Toasts are fixed to the bottom of the screen; keep that much room below the page so
+  // its last button can still be scrolled above them (see .app-main in admin.css)
+  function reserveToastSpace() {
+    const c = document.getElementById('toastContainer');
+    const h = c && c.querySelector('.toast.show') ? c.offsetHeight : 0;
+    document.documentElement.style.setProperty('--ck-toast-space', h + 'px');
+  }
+
   function showToast(el, type) {
-    if (!window.bootstrap) { el.classList.add('show'); return; }
+    if (!window.bootstrap) { el.classList.add('show'); reserveToastSpace(); return; }
     const t = new bootstrap.Toast(el, { autohide: type !== 'danger', delay: 5000 });
-    el.addEventListener('hidden.bs.toast', () => el.remove());
+    el.addEventListener('shown.bs.toast', reserveToastSpace);
+    el.addEventListener('hidden.bs.toast', () => { el.remove(); reserveToastSpace(); });
     t.show();
   }
 
@@ -119,6 +128,24 @@
     input.type = show ? 'text' : 'password';
     const icon = btn.querySelector('.bi');
     if (icon) icon.className = show ? 'bi bi-eye-slash' : 'bi bi-eye';
+  });
+
+  // ---------- Random password: <button data-generate-password="#id"> ----------
+  // Shown in plain text afterwards, since the point is to pass it on to someone
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-generate-password]');
+    if (!btn) return;
+    const selector = btn.dataset.generatePassword;
+    const input = document.querySelector(selector);
+    if (!input || !window.crypto || !crypto.getRandomValues) return;
+    const alphabet = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/l/I
+    const values = new Uint32Array(16);
+    crypto.getRandomValues(values);
+    input.value = Array.from(values, (n) => alphabet[n % alphabet.length]).join('');
+    input.type = 'text';
+    document.querySelectorAll(`[data-toggle-password="${selector}"] .bi`).forEach((i) => { i.className = 'bi bi-eye-slash'; });
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
   });
 
   // ---------- UTC timestamps → viewer's local time: <time data-utc="2026-01-01 10:00:00"> ----------

@@ -220,6 +220,62 @@ function initTables() {
       );
     `);
   }
+
+  // Admin accounts. session_version is part of every login cookie: bumping it (new
+  // password, logout everywhere) ends all sessions of that one account.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      must_change_password INTEGER DEFAULT 0,
+      totp_enabled INTEGER DEFAULT 0,
+      totp_secret TEXT DEFAULT NULL,
+      session_version INTEGER DEFAULT 1,
+      created_by TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      last_login_at TEXT DEFAULT NULL
+    );
+  `);
+  if (db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) seedFirstUser();
+}
+
+/**
+ * The first account, "admin". A database from before multi-user login (or a crawlkomik
+ * backup) keeps its single password and 2FA, so upgrading or restoring keeps the same
+ * login. A fresh install takes ADMIN_PASSWORD, or else "admin" — which must be changed at
+ * the first login.
+ */
+function seedFirstUser() {
+  const setting = (key) => {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    return row ? row.value : null;
+  };
+  const legacyHash = setting('admin_password');
+  const envPassword = process.env.ADMIN_PASSWORD || '';
+  if (envPassword && envPassword.length < MIN_PASSWORD_LENGTH) {
+    console.warn(`[Auth] ADMIN_PASSWORD ignored: shorter than ${MIN_PASSWORD_LENGTH} characters`);
+  }
+  let hash;
+  let mustChange;
+  if (legacyHash) {
+    hash = legacyHash;
+    mustChange = verifyPassword('admin', legacyHash); // still the default password
+  } else if (envPassword.length >= MIN_PASSWORD_LENGTH) {
+    hash = hashPassword(envPassword);
+    mustChange = false;
+  } else {
+    hash = hashPassword('admin');
+    mustChange = true;
+  }
+  const totpSecret = setting('totp_enabled') === '1' ? setting('totp_secret') : null;
+  db.transaction(() => {
+    db.prepare('INSERT INTO users (username, password_hash, must_change_password, totp_enabled, totp_secret) VALUES (?, ?, ?, ?, ?)')
+      .run('admin', hash, mustChange ? 1 : 0, totpSecret ? 1 : 0, totpSecret);
+    // Now on the user — don't keep a second copy of the secrets in settings
+    db.prepare("DELETE FROM settings WHERE key IN ('admin_password', 'totp_enabled', 'totp_secret')").run();
+  })();
 }
 
 // --- Website CRUD ---
@@ -469,6 +525,8 @@ function deleteCustomPageType(id) {
 
 const crypto = require('crypto');
 
+const MIN_PASSWORD_LENGTH = 8;
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -486,12 +544,52 @@ function verifyPassword(password, stored) {
   return crypto.timingSafeEqual(hashBuf, testBuf);
 }
 
-function getAdminPassword() {
-  return getSetting('admin_password');
+// --- Admin users ---
+
+// What lists and views get: never the password hash or the TOTP secret
+const USER_PUBLIC_COLUMNS = 'id, username, must_change_password, totp_enabled, created_by, created_at, last_login_at';
+
+function getUsers() {
+  return getDb().prepare(`SELECT ${USER_PUBLIC_COLUMNS} FROM users ORDER BY username`).all();
 }
 
-function setAdminPassword(password) {
-  setSetting('admin_password', hashPassword(password));
+/** Full row, password hash and TOTP secret included — for authentication only. */
+function getUserById(id) {
+  return getDb().prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+function getUserByUsername(username) {
+  return getDb().prepare('SELECT * FROM users WHERE username = ?').get(username);
+}
+
+function createUser({ username, password, mustChange = true, createdBy = null }) {
+  return getDb().prepare('INSERT INTO users (username, password_hash, must_change_password, created_by) VALUES (?, ?, ?, ?)')
+    .run(username, hashPassword(password), mustChange ? 1 : 0, createdBy);
+}
+
+/** New password. Ends every session of that user (session_version bump). */
+function setUserPassword(id, password, { mustChange = false } = {}) {
+  return getDb().prepare("UPDATE users SET password_hash = ?, must_change_password = ?, session_version = session_version + 1, updated_at = datetime('now') WHERE id = ?")
+    .run(hashPassword(password), mustChange ? 1 : 0, id);
+}
+
+/** Turn 2FA on with this secret, or off with null. */
+function setUserTotp(id, secret) {
+  return getDb().prepare("UPDATE users SET totp_enabled = ?, totp_secret = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(secret ? 1 : 0, secret || null, id);
+}
+
+/** Log the user out on every device. */
+function bumpSessionVersion(id) {
+  return getDb().prepare('UPDATE users SET session_version = session_version + 1 WHERE id = ?').run(id);
+}
+
+function touchUserLogin(id) {
+  getDb().prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(id);
+}
+
+function deleteUser(id) {
+  return getDb().prepare('DELETE FROM users WHERE id = ?').run(id);
 }
 
 function closeDb() {
@@ -546,8 +644,16 @@ module.exports = {
   setSetting,
   hashPassword,
   verifyPassword,
-  getAdminPassword,
-  setAdminPassword,
+  MIN_PASSWORD_LENGTH,
+  getUsers,
+  getUserById,
+  getUserByUsername,
+  createUser,
+  setUserPassword,
+  setUserTotp,
+  bumpSessionVersion,
+  touchUserLogin,
+  deleteUser,
   getCustomPageTypes,
   getCustomPageTypeByName,
   createCustomPageType,

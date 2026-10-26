@@ -61,11 +61,12 @@ Situs di balik Cloudflare/CAPTCHA tetap butuh crawler berbasis Chrome (crawlkomi
   - Image URLs in custom fields go through the image proxy/cache too (works for custom page types, not just the built-in ones) — auto-detected by extension, or force it with the **Img** toggle for extension-less CDN URLs
   - Supports CSS selectors, `js:` prefix, and attribute extraction
   - Visual repeater builder + direct JSON editing in admin panel
-- **Admin login** with password protection (scrypt hash, signed cookie)
-  - Default password: `admin` (change after first login)
-  - Change password from dashboard
-  - **Google Authenticator (TOTP 2FA)** — setup from dashboard, QR code scan, 6-digit code on login
-  - **Logout from all devices** — invalidates all active sessions by regenerating session secret
+- **Admin login** with several admins, each with their own username + password (scrypt hash, signed cookie) — see [Admin & login](#admin--login)
+  - First start: `admin` / `admin` (or `ADMIN_PASSWORD`), and the first login has to choose a new password
+  - **Admins** page: add admins (temporary password, replaced at their first login), reset a forgotten password, reset 2FA, delete — each confirmed with your own password
+  - **Google Authenticator (TOTP 2FA)** per admin — setup from Settings, QR code scan, 6-digit code on login
+  - Brute-force brake: 10 failed attempts from one IP → that IP waits 15 minutes
+  - **Logout from all devices** — ends every session of your own account
 - **Clear image cache** — manually purge all cached images from the Storage page
 - **API request logs** (`/admin/logs`) — every API hit recorded with status, duration, error & response body
   - Filter by status/endpoint, stats cards (total, errors, today)
@@ -121,19 +122,35 @@ npm run dev      # with auto-reload
 | Variable | Default | |
 |---|---|---|
 | `PORT` | `3000` | HTTP port the app listens on (in Docker: inside the container, and both sides of the compose mapping) |
+| `ADMIN_PASSWORD` | – | password of the first admin (`admin`, min. 8 characters) — only read while the database has no admin yet. Without it the first login is `admin`/`admin` |
 | `LIGHTPANDA_EXECUTABLE_PATH` | `lightpanda` on `PATH` | Lightpanda binary |
 | `MAX_BROWSERS` | `3` | concurrent browsers when not set in Settings |
 | `LIGHTPANDA_DISABLE_TELEMETRY` | set in Docker | Lightpanda sends usage telemetry unless this is set (to any value). The Docker image sets it; remove the `ENV` line to allow telemetry |
 | `LIGHTPANDA_DISABLE_CORE_DUMP` | set in Docker | no core dumps when the browser crashes |
-| `TRUST_PROXY` | – | `1` when behind nginx/Caddy |
+| `TRUST_PROXY` | – | `1` when behind nginx/Caddy — the login brake then counts each visitor's IP instead of the proxy's. Never without such a proxy (clients could fake their IP) |
 
 ## Pindah dari crawlkomik
 1. crawlkomik: Settings → Backup & Restore → **Download Backup**.
-2. PinguinCrawl: Settings → Backup & Restore → **Restore** file tadi. (Database PinguinCrawl ada di `data/pinguincrawl.db`, jadi menyalin folder `data/` crawlkomik saja tidak cukup.)
+2. PinguinCrawl: Settings → Backup & Restore → **Restore** file tadi. (Database PinguinCrawl ada di `data/pinguincrawl.db`, jadi menyalin folder `data/` crawlkomik saja tidak cukup.) Setelahnya login dengan username `admin` + password crawlkomik (2FA ikut pindah).
 3. Website yang field **User Agent**-nya berisi `Mozilla/...`: kosongkan — Lightpanda mengabaikannya.
 4. Jalankan **Cek Lightpanda** (Settings) per website. Yang terdeteksi memasang challenge tetap di crawlkomik.
 
 Setelan headless, CAPTCHA takeover (timeout, webhook) dan fingerprint check sengaja tidak ada lagi.
+
+## Admin & login
+- **Login** pakai username + password. Instalasi baru: `admin` / `admin`, dan login pertama langsung diminta membuat password baru. Panel langsung terbuka ke internet? Set `ADMIN_PASSWORD` (min. 8 karakter) sebelum start pertama supaya tidak ada jeda dengan password default.
+- **Upgrade / restore** dari versi lama atau backup crawlkomik: password lama tetap berlaku dengan username `admin`, 2FA ikut.
+- **Menambah admin**: menu **Admins** → *Tambah admin* — isi username, password sementara (tombol acak di sebelahnya membuatkan satu), dan password kamu sendiri. Berikan username + password sementara itu ke admin baru; saat login pertama dia wajib menggantinya, jadi kamu tidak tahu password akhirnya.
+- **Semua admin setara** — akses penuh, termasuk menambah, me-reset, dan menghapus admin lain. Akun sendiri tidak bisa dihapus atau di-reset dari halaman Admins (password, 2FA, dan sesi kamu ada di Settings → Keamanan), jadi selalu tersisa minimal satu admin.
+- **Lupa password / HP authenticator hilang**: admin lain membuka Admins → *Kelola* → **Reset password** (dia langsung keluar dari semua perangkat) atau **Reset 2FA**.
+- **Satu-satunya admin terkunci**: jalankan di server — admin itu mendapat password sementara, keluar dari semua perangkat, dan 2FA-nya dimatikan:
+  ```bash
+  docker compose exec -u pinguincrawl pinguincrawl node src/reset-admin.js admin   # Docker
+  npm run reset-admin -- admin                                                    # manual
+  ```
+  Tanpa username, perintah itu menampilkan daftar admin.
+- **Keamanan**: password minimal 8 karakter (hash scrypt), cookie sesi `HttpOnly` + `SameSite=Strict` (+ `Secure` lewat HTTPS) berlaku 24 jam. Ganti password atau **Logout All Devices** hanya mengakhiri sesi akun itu; admin yang dihapus langsung keluar. Menambah/me-reset/menghapus admin, ganti password, dan menyalakan/mematikan 2FA meminta password kamu lagi. 10 percobaan gagal dari satu IP (IPv6: satu /64) dalam 15 menit → IP itu ditolak sampai 15 menit lewat (atau restart app); di belakang nginx/Caddy set `TRUST_PROXY=1`, kalau tidak semua pengunjung terhitung satu IP.
+- File backup berisi akun admin (hash password + secret 2FA) — simpan di tempat aman.
 
 ## Cara kerja browser
 - Tiap crawl menjalankan `lightpanda serve --port 0` sendiri, Puppeteer (`puppeteer-core`) terhubung lewat CDP, lalu prosesnya dihentikan begitu crawl selesai. Proxy, timezone, dan sub-resource yang dimuat adalah opsi per proses di Lightpanda, karena itu satu proses per crawl.
@@ -181,7 +198,8 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 
 ## Admin Panel
 - URL: `http://localhost:3000/admin` (login required)
-- Default password: `admin` — change from Settings → Keamanan after first login (dashboard shows a warning until you do)
+- First login: `admin` / `admin` (or `ADMIN_PASSWORD`) — you are asked to choose a new password right away
+- Admins (`/admin/users`) — add admins, reset password / 2FA, delete
 - Works on phones: menu ☰ di kiri atas
 - Add/edit/delete websites
 - Configure CSS selectors per page type (katalog, komik_detail, chapter_list, chapter + custom types)
@@ -195,7 +213,7 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 - Custom headers & cookies per website (JSON fields in website form)
 - Proxy list + rotation mode per website, with per-proxy status and "Cek semua proxy"
 - View API logs (`/admin/logs`) — filter, stats, delete all/errors/old; logs >2 weeks auto-deleted
-- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, password, 2FA, logout all devices
+- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, your own password, 2FA, logout all devices
 - Backup & restore database (Settings → Backup & Restore)
 - Storage (`/admin/storage`) — disk & inode usage, cleanup, image cache retention / size cap
 
@@ -213,17 +231,19 @@ docker compose up -d --build
 ```
 src/
   app.js              # Entry point
+  reset-admin.js      # CLI: temporary password for a locked-out admin
   models/database.js  # SQLite schema + CRUD
   services/lightpanda.js  # Lightpanda processes: start (port 0), stop, sweep orphans, version
   services/browser.js # Puppeteer-core over CDP: per-crawl browser, page setup, actions, challenge check
   services/browser-check.js # "Cek Lightpanda" self-check (per proxy for a website)
   services/proxy-pool.js # Proxy list parsing, rotation (round-robin/random/failover), cooldown of failing proxies
   services/storage.js # Disk/inode report + cleanup jobs (Storage page)
+  services/login-guard.js # Brute-force brake for login and password confirmations
   services/crawler.js    # Crawl logic per page type
   services/image-proxy.js # Image cache/proxy service
   services/captcha-detector.js # Detect CF/Turnstile/reCAPTCHA/hCaptcha/text challenges
   routes/api.js       # API endpoints
-  middleware/auth.js  # Login auth middleware
+  middleware/auth.js  # Login sessions: signed cookies per admin, 2FA step, forced password change
   routes/admin.js     # Admin panel routes
   views/              # EJS templates
   public/             # admin.css + admin.js (layout, theme, toasts, JSON check)

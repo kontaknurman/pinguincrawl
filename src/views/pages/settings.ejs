@@ -1,7 +1,7 @@
 <div class="page-header">
   <div>
     <h1>Settings</h1>
-    <p class="page-subtitle">Browser crawler, akses API, keamanan login, dan backup database.</p>
+    <p class="page-subtitle">Browser crawler, akses API, keamanan akun kamu, dan backup database.</p>
   </div>
 </div>
 
@@ -95,19 +95,21 @@
     </section>
   </div>
 
-  <!-- Security -->
+  <!-- Security: the signed-in admin's own account -->
   <div class="col-12">
     <section class="card" id="security">
-      <div class="card-header"><h2 class="section-title"><i class="bi bi-shield-lock me-1"></i>Keamanan</h2></div>
+      <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+        <h2 class="section-title me-auto"><i class="bi bi-shield-lock me-1"></i>Keamanan akun <code><%= username %></code></h2>
+        <a href="/admin/users" class="btn btn-sm btn-outline-secondary"><i class="bi bi-people me-1"></i>Kelola admin lain</a>
+      </div>
       <div class="card-body">
         <div class="row g-4">
           <div class="col-lg-6">
             <h3 class="h6">Change password</h3>
-            <% if (isDefaultPassword) { %>
-              <div class="alert alert-warning py-2 small"><i class="bi bi-exclamation-triangle me-1"></i>Password masih default (<code>admin</code>) — segera ganti.</div>
-            <% } %>
             <% if (pwError) { %><div class="alert alert-danger py-2 small"><%= pwError %></div><% } %>
             <form method="POST" action="/admin/change-password">
+              <!-- Lets password managers store the new password under the right username -->
+              <input type="text" name="username" value="<%= username %>" autocomplete="username" hidden>
               <div class="mb-2">
                 <label class="form-label small" for="current_password">Current password</label>
                 <div class="input-group">
@@ -115,16 +117,17 @@
                   <button class="btn btn-outline-secondary" type="button" data-toggle-password="#current_password" aria-label="Tampilkan password"><i class="bi bi-eye"></i></button>
                 </div>
               </div>
-              <div class="row g-2 mb-3">
+              <div class="row g-2 mb-2">
                 <div class="col-sm-6">
                   <label class="form-label small" for="new_password">New password</label>
-                  <input type="password" class="form-control" id="new_password" name="new_password" required minlength="4" autocomplete="new-password">
+                  <input type="password" class="form-control" id="new_password" name="new_password" required minlength="<%= minPassword %>" maxlength="200" autocomplete="new-password">
                 </div>
                 <div class="col-sm-6">
                   <label class="form-label small" for="confirm_password">Confirm password</label>
-                  <input type="password" class="form-control" id="confirm_password" name="confirm_password" required minlength="4" autocomplete="new-password">
+                  <input type="password" class="form-control" id="confirm_password" name="confirm_password" required minlength="<%= minPassword %>" maxlength="200" autocomplete="new-password">
                 </div>
               </div>
+              <small class="form-hint d-block mb-3">Minimal <%= minPassword %> karakter. Perangkat lain yang login dengan akun ini otomatis keluar.</small>
               <button type="submit" class="btn btn-warning"><i class="bi bi-key me-1"></i>Change Password</button>
             </form>
           </div>
@@ -133,7 +136,7 @@
             <h3 class="h6">Two-factor auth (2FA)</h3>
             <% if (totpError) { %><div class="alert alert-danger py-2 small"><%= totpError %></div><% } %>
             <% if (totpEnabled) { %>
-              <p class="small text-body-secondary"><span class="badge text-bg-success me-1">Aktif</span>Kode Google Authenticator diminta setiap login.</p>
+              <p class="small text-body-secondary"><span class="badge text-bg-success me-1">Aktif</span>Kode Google Authenticator diminta setiap kamu login.</p>
               <form method="POST" action="/admin/2fa/disable" data-confirm="Matikan 2FA? Login tidak lagi meminta kode authenticator.">
                 <div class="input-group mb-2">
                   <input type="password" class="form-control" name="current_password" placeholder="Password untuk mematikan" required autocomplete="current-password" aria-label="Password">
@@ -147,7 +150,7 @@
 
             <hr class="my-4">
             <h3 class="h6">Sesi login</h3>
-            <p class="small text-body-secondary">Keluarkan semua perangkat yang sedang login (termasuk perangkat ini).</p>
+            <p class="small text-body-secondary">Keluarkan semua perangkat yang sedang login dengan akun ini (termasuk perangkat ini). Admin lain tidak ikut keluar.</p>
             <form method="POST" action="/admin/logout-all" data-confirm="Logout dari SEMUA perangkat? Kamu akan diarahkan ke halaman login.">
               <button type="submit" class="btn btn-outline-warning"><i class="bi bi-box-arrow-right me-1"></i>Logout All Devices</button>
             </form>
@@ -166,12 +169,12 @@
         <div class="row g-4">
           <div class="col-lg-6">
             <h3 class="h6">Download backup</h3>
-            <p class="small text-body-secondary">File SQLite berisi semua website, page config, dan settings.</p>
+            <p class="small text-body-secondary">File SQLite berisi semua website, page config, settings, dan akun admin (hash password + secret 2FA) — simpan di tempat aman.</p>
             <a href="/admin/backup" class="btn btn-outline-info"><i class="bi bi-download me-1"></i>Download Backup</a>
           </div>
           <div class="col-lg-6">
             <h3 class="h6">Restore</h3>
-            <p class="small text-body-secondary">Upload file backup <code>.db</code>. Database saat ini otomatis di-backup dulu (<code>.pre-restore</code>).</p>
+            <p class="small text-body-secondary">Upload file backup <code>.db</code>. Database saat ini otomatis di-backup dulu (<code>.pre-restore</code>). Akun admin ikut diganti dengan isi backup — setelahnya login dengan akun dari backup itu (backup crawlkomik / versi lama: username <code>admin</code> + password lamanya).</p>
             <form method="POST" action="/admin/restore" enctype="multipart/form-data" data-confirm="Restore database? Data saat ini akan diganti.">
               <div class="input-group">
                 <input type="file" class="form-control" name="dbfile" accept=".db,.sqlite,.sqlite3" required aria-label="File backup">
