@@ -75,20 +75,6 @@ function requireAuth(req, res, next) {
   res.redirect('/admin/login');
 }
 
-// Verify auth from a raw request (used for WebSocket upgrade handshake, which
-// bypasses Express routing). Returns true if a valid admin auth_token cookie is present.
-function verifyRequestAuth(req) {
-  if (!db.getAdminPassword()) {
-    db.setAdminPassword('admin');
-  }
-  const cookies = parseCookies(req.headers.cookie);
-  const token = cookies.auth_token;
-  if (!token) return false;
-  const secret = getSessionSecret();
-  const payload = verifyToken(token, secret);
-  return !!(payload && payload.role === 'admin' && payload.iat && (Date.now() - payload.iat) < 86400000);
-}
-
 // Create auth cookie
 function createAuthCookie(res, req) {
   const secret = getSessionSecret();
@@ -125,4 +111,4 @@ function clear2faPendingCookie(res) {
   res.appendHeader('Set-Cookie', '2fa_pending=; HttpOnly; Path=/admin/login; SameSite=Strict; Max-Age=0');
 }
 
-module.exports = { requireAuth, verifyRequestAuth, createAuthCookie, clearAuthCookie, resetSessionSecret, create2faPendingCookie, verify2faPendingToken, clear2faPendingCookie };
+module.exports = { requireAuth, createAuthCookie, clearAuthCookie, resetSessionSecret, create2faPendingCookie, verify2faPendingToken, clear2faPendingCookie };

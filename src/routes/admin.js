@@ -10,7 +10,7 @@ const OTPAuth = require('otpauth');
 const QRCode = require('qrcode');
 const { clearAllImages } = require('../services/image-proxy');
 const { getActiveBrowserCount } = require('../services/browser');
-const captchaRegistry = require('../services/captcha-registry');
+const lightpanda = require('../services/lightpanda');
 const storage = require('../services/storage');
 
 
@@ -49,7 +49,6 @@ const FLASH = {
     type_deleted: 'Custom page type deleted',
     config_saved: 'Config saved!',
     logs_deleted: '{n} log(s) deleted',
-    captcha_settings: 'CAPTCHA settings updated',
   },
   err: {},
 };
@@ -102,7 +101,7 @@ router.post('/login', express.urlencoded({ extended: true }), (req, res) => {
       return res.redirect('/admin');
     }
     const totp = new OTPAuth.TOTP({
-      issuer: 'CrawlKomik',
+      issuer: 'PinguinCrawl',
       label: 'Admin',
       algorithm: 'SHA1',
       digits: 6,
@@ -151,7 +150,6 @@ router.use(requireAuth);
 // Shared locals for every admin page: nav badges + the flash toast
 router.use((req, res, next) => {
   res.locals.nav = {
-    captchaWaiting: captchaRegistry.waitingCount(),
     diskWarning: storage.diskWarning(),
   };
   res.locals.flash = flashFromQuery(req.query);
@@ -183,7 +181,9 @@ function settingsLocals(req, extra = {}) {
     retryCount: parseInt(db.getSetting('retry_count')) || 0,
     retryDelay: parseInt(db.getSetting('retry_delay')) || 2000,
     maxBrowsers: parseInt(db.getSetting('max_browsers')) || parseInt(process.env.MAX_BROWSERS) || 3,
-    browserHeadless: db.getSetting('browser_headless') !== '0',
+    challengeDetection: db.getSetting('challenge_detection') !== '0',
+    lightpanda: { executable: lightpanda.executablePath(), version: lightpanda.cachedVersion() },
+    websites: db.getAllWebsites(),
     totpEnabled: db.getSetting('totp_enabled') === '1',
     isDefaultPassword: isDefaultPassword(),
     clientIp: (req.ip || '').replace(/^::ffff:/, ''),
@@ -260,8 +260,8 @@ router.post('/crawl-settings', express.urlencoded({ extended: true }), (req, res
   db.setSetting('max_browsers', String(maxBrowsers));
   db.setSetting('retry_count', String(count));
   db.setSetting('retry_delay', String(delay));
-  // Checkbox: present ('on') = headless, absent = headful
-  db.setSetting('browser_headless', req.body.browser_headless === 'on' ? '1' : '0');
+  // Checkbox: present ('on') = fail fast on challenge pages, absent = treat them as content
+  db.setSetting('challenge_detection', req.body.challenge_detection === 'on' ? '1' : '0');
   res.redirect('/admin/settings?ok=crawl_settings#crawl');
 });
 
@@ -592,55 +592,18 @@ router.post('/logs/delete-old', (req, res) => {
   res.redirect(`/admin/logs?ok=logs_deleted&n=${result.changes}`);
 });
 
-// --- Manual CAPTCHA Takeover Dashboard ---
-function captchaLocals(extra = {}) {
-  return {
-    page: 'captcha',
-    sessions: captchaRegistry.publicList(),
-    waitingCount: captchaRegistry.waitingCount(),
-    websites: db.getAllWebsites(),
-    settings: {
-      enabled: db.getSetting('captcha_manual_enabled') === '1',
-      timeoutSecs: Math.round((parseInt(db.getSetting('captcha_timeout_ms')) || 180000) / 1000),
-      notifyUrl: db.getSetting('captcha_notify_url') || '',
-      telegramChatId: db.getSetting('captcha_notify_telegram_chat_id') || '',
-    },
-    ...extra,
-  };
-}
-
-router.get('/captcha', (req, res) => {
-  res.render('pages/captcha-sessions', captchaLocals());
-});
-
-// Fingerprint self-check — shows which bot signals are bad on this server, so a
-// looping Cloudflare challenge can be diagnosed instead of guessed at.
-router.get('/captcha/diagnose', async (req, res) => {
+// --- Lightpanda self-check ---
+// Whether the crawl browser works here and what it sends; with ?website=<name> also
+// opens that website's base URL through its proxy and reports a challenge page.
+router.get('/browser-check', async (req, res) => {
   try {
-    const { runFingerprintCheck } = require('../services/fingerprint-check');
-    // ?website=<name> checks with that website's UA / custom headers / proxy
-    const report = await runFingerprintCheck(req.query.website || undefined);
+    const { runBrowserCheck } = require('../services/browser-check');
+    const report = await runBrowserCheck(req.query.website || undefined);
     res.json(report);
   } catch (err) {
     const notFound = /not found$/.test(err.message);
     res.status(notFound ? 404 : 500).json({ status: 'error', message: err.message });
   }
-});
-
-router.post('/captcha/settings', express.urlencoded({ extended: true }), (req, res) => {
-  const { manual_enabled, timeout_secs, notify_url, telegram_chat_id } = req.body;
-
-  db.setSetting('captcha_manual_enabled', manual_enabled === 'on' ? '1' : '0');
-
-  let secs = parseInt(timeout_secs) || 180;
-  if (secs < 30) secs = 30;
-  if (secs > 1800) secs = 1800;
-  db.setSetting('captcha_timeout_ms', String(secs * 1000));
-
-  db.setSetting('captcha_notify_url', (notify_url || '').trim());
-  db.setSetting('captcha_notify_telegram_chat_id', (telegram_chat_id || '').trim());
-
-  res.redirect('/admin/captcha?ok=captcha_settings');
 });
 
 // --- Logout from All Devices ---
@@ -655,7 +618,7 @@ router.get('/2fa/setup', async (req, res) => {
   const totpEnabled = db.getSetting('totp_enabled') === '1';
   const secret = new OTPAuth.Secret({ size: 20 });
   const totp = new OTPAuth.TOTP({
-    issuer: 'CrawlKomik',
+    issuer: 'PinguinCrawl',
     label: 'Admin',
     algorithm: 'SHA1',
     digits: 6,
@@ -685,7 +648,7 @@ router.post('/2fa/enable', express.urlencoded({ extended: true }), async (req, r
   }
 
   const totp = new OTPAuth.TOTP({
-    issuer: 'CrawlKomik',
+    issuer: 'PinguinCrawl',
     label: 'Admin',
     algorithm: 'SHA1',
     digits: 6,
@@ -761,12 +724,12 @@ router.post('/clear-cache', (req, res) => {
 router.get('/backup', (req, res) => {
   const dbPath = db.getDbPath();
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const backupFile = path.join(path.dirname(dbPath), `crawlkomik-backup-${timestamp}.db`);
+  const backupFile = path.join(path.dirname(dbPath), `pinguincrawl-backup-${timestamp}.db`);
   try {
     // VACUUM INTO creates a consistent snapshot (safe even with active connections)
     db.getDb().exec(`VACUUM INTO '${backupFile.replace(/'/g, "''")}'`);
 
-    res.download(backupFile, `crawlkomik-backup-${timestamp}.db`, (err) => {
+    res.download(backupFile, `pinguincrawl-backup-${timestamp}.db`, (err) => {
       // Clean up temp backup file after download
       try { fs.unlinkSync(backupFile); } catch {}
     });

@@ -72,8 +72,11 @@
           </div>
           <div class="mb-3">
             <label class="form-label" for="user_agent">User Agent <small class="text-body-secondary">(opsional)</small></label>
-            <input type="text" id="user_agent" name="user_agent" class="form-control font-monospace" value="<%= w.user_agent || '' %>" placeholder="Kosong = UA bawaan stealth (disarankan)" spellcheck="false">
-            <small class="form-hint">Kosongkan kecuali perlu — UA yang dipaksa bisa bikin client hints tidak konsisten dan dideteksi Cloudflare.</small>
+            <input type="text" id="user_agent" name="user_agent" class="form-control font-monospace" value="<%= w.user_agent || '' %>" placeholder="Kosong = UA bawaan Lightpanda (disarankan)" spellcheck="false">
+            <small class="form-hint">Lightpanda menolak UA yang mengandung <code>Mozilla</code> (tidak mau menyamar jadi browser lain) — UA seperti itu diabaikan dan request tetap mengaku Lightpanda. Mode HTTP biasa (JS off) memakai UA ini apa adanya.</small>
+            <% if (w.user_agent && /mozilla/i.test(w.user_agent)) { %>
+              <div class="alert alert-warning py-1 px-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle me-1"></i>UA ini mengandung "Mozilla", jadi tidak dipakai saat JS rendering (Lightpanda).</div>
+            <% } %>
           </div>
           <div>
             <label class="form-label" for="timezone">Timezone <small class="text-body-secondary">(opsional)</small></label>
@@ -81,7 +84,7 @@
             <datalist id="tzList">
               <% timezones.forEach(tz => { %><option value="<%= tz %>"></option><% }) %>
             </datalist>
-            <small class="form-hint">Samakan dengan negara IP/proxy. Container jalan di UTC, jadi proxy di negara lain bikin jam browser tidak cocok dengan geolokasi IP — sinyal yang dicek Cloudflare.</small>
+            <small class="form-hint">Jam browser (<code>Date</code>/<code>Intl</code>). Samakan dengan negara IP/proxy — container jalan di UTC, jadi tanpa ini tanggal yang dirender JavaScript situs memakai jam UTC.</small>
           </div>
         </div>
       </section>
@@ -100,7 +103,7 @@
             <div class="form-label">Image cache method</div>
             <div class="row g-2">
               <% [
-                ['browser', 'Browser Intercept', 'Gambar di-capture dari response browser — efisien, 1x download lewat proxy.'],
+                ['browser', 'Browser', 'Diunduh oleh Lightpanda dari dalam halaman — lewat proxy, cookie & Referer yang sama dengan halaman.'],
                 ['node', 'Node.js HTTP', 'Server mendownload terpisah dengan header Referer.'],
                 ['proxy', 'Lazy Proxy', 'Di-cache saat gambar pertama kali diakses, bukan saat crawl.'],
               ].forEach(([val, title, desc]) => { %>
@@ -131,7 +134,7 @@
                 </span>
               </div>
               <textarea name="custom_headers" id="custom_headers" class="form-control font-monospace" rows="6" data-json="object" spellcheck="false" placeholder='{"Referer": "https://example.com"}'><%= w.custom_headers || '{}' %></textarea>
-              <small class="form-hint">Object JSON. Jangan isi <code>Accept-Language</code> kecuali tahu efeknya.</small>
+              <small class="form-hint">Object JSON. Header <code>User-Agent</code> berisi <code>Mozilla</code> diabaikan Lightpanda.</small>
             </div>
             <div class="col-lg-4">
               <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
@@ -143,7 +146,7 @@
               </div>
               <textarea name="cookies" id="cookies" class="form-control font-monospace" rows="6" data-json="array" spellcheck="false" placeholder='[{"name":"key","value":"val","domain":".example.com"}]'><%= w.cookies || '[]' %></textarea>
               <small class="form-hint">
-                Array JSON. Otomatis diperbarui setelah lolos Cloudflare.
+                Array JSON, dipasang sebelum halaman dibuka. Diperbarui otomatis kalau halaman challenge sempat lolos sendiri.
                 <% if (cookieInfo && cookieInfo.count) { %><br><i class="bi bi-cookie"></i> <%= cookieInfo.count %> cookie tersimpan<%= cookieInfo.cf ? ' (termasuk cf_clearance)' : '' %>.<% } %>
               </small>
             </div>

@@ -1,5 +1,9 @@
 /**
- * CAPTCHA / challenge page detection for Puppeteer pages.
+ * CAPTCHA / challenge page detection for crawl pages.
+ *
+ * Lightpanda cannot get past these (no rendering engine, and it identifies itself as
+ * Lightpanda), so fetchPage() uses this to fail with a clear error instead of returning
+ * the challenge page's content, or timing out on a selector that will never appear.
  *
  * detectCaptcha(page) returns { detected, type, reason }:
  *   type: 'cloudflare' | 'turnstile' | 'recaptcha' | 'hcaptcha' | 'ddos-guard' | 'text-challenge' | null
@@ -141,58 +145,10 @@ async function detectCaptcha(page) {
       return { detected: false, type: null, reason: null };
     }, STRONG_PHRASES, WEAK_PHRASES, CHALLENGE_TITLES);
   } catch (err) {
-    // Navigation destroyed the context mid-check (common while a challenge reloads).
-    // Report "not detected + error" so the caller polls again.
+    // Navigation destroyed the context mid-check (a page redirecting itself).
+    // Report "not detected + error" — the crawl carries on.
     return { detected: false, type: null, reason: null, error: err.message };
   }
 }
 
-/**
- * CDP-only detection — reads the title and queries the DOM through the DevTools
- * protocol, executing ZERO script in the page. Used while a challenge is on screen:
- * page.evaluate() runs in the page's main world, so a challenge script can observe
- * (and fingerprint) us polling it every couple of seconds. Markers + title are enough
- * to tell whether the challenge is still up.
- *
- * Returns the same shape as detectCaptcha(); { error } means "couldn't tell, retry".
- */
-async function detectCaptchaViaCdp(client) {
-  try {
-    const hist = await client.send('Page.getNavigationHistory');
-    const entry = hist.entries[hist.currentIndex];
-    const title = ((entry && entry.title) || '').toLowerCase();
-
-    // nodeIds are invalidated by navigation, so re-fetch the document each poll
-    const doc = await client.send('DOM.getDocument', { depth: 0 });
-    const rootId = doc.root.nodeId;
-    const exists = async (selector) => {
-      const { nodeId } = await client.send('DOM.querySelector', { nodeId: rootId, selector });
-      return !!nodeId;
-    };
-
-    if (title.includes('just a moment') || title.includes('attention required')) {
-      return { detected: true, type: 'cloudflare', reason: 'Cloudflare challenge title' };
-    }
-    if (await exists('#challenge-form, #challenge-running, #challenge-stage, #cf-challenge-running')) {
-      return { detected: true, type: 'cloudflare', reason: 'Cloudflare challenge page markers' };
-    }
-    if (title.includes('ddos-guard') || await exists('#ddg-iframe, .ddg-captcha')) {
-      return { detected: true, type: 'ddos-guard', reason: 'DDoS-Guard challenge markers' };
-    }
-    if (await exists('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, input[name="cf-turnstile-response"]')) {
-      return { detected: true, type: 'turnstile', reason: 'Turnstile widget present' };
-    }
-    if (await exists('iframe[src*="hcaptcha.com"], .h-captcha')) {
-      return { detected: true, type: 'hcaptcha', reason: 'hCaptcha widget present' };
-    }
-    if (await exists('iframe[src*="/recaptcha/api2/"], iframe[src*="/recaptcha/enterprise/"]')) {
-      return { detected: true, type: 'recaptcha', reason: 'reCAPTCHA widget present' };
-    }
-    return { detected: false, type: null, reason: null };
-  } catch (err) {
-    // Navigation invalidated the document mid-poll — tell the caller to retry
-    return { detected: false, type: null, reason: null, error: err.message };
-  }
-}
-
-module.exports = { detectCaptcha, detectCaptchaViaCdp, STRONG_PHRASES, WEAK_PHRASES, CHALLENGE_PHRASES, CHALLENGE_TITLES };
+module.exports = { detectCaptcha, STRONG_PHRASES, WEAK_PHRASES, CHALLENGE_PHRASES, CHALLENGE_TITLES };

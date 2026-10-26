@@ -1,6 +1,9 @@
 const { fetchPage, fetchPageSimple, extractCookies } = require('./browser');
 const db = require('../models/database');
-const { cacheImagesFromPage, cacheImage, cacheImageNode, cacheImageData, cacheImagesNode, startImageIntercept } = require('./image-proxy');
+const { cacheImagesFromPage, cacheImage, cacheImageNode, cacheImageData, cacheImagesNode } = require('./image-proxy');
+
+// Page types whose crawl never caches images (no cover / chapter / custom-field images)
+const NO_IMAGE_PAGE_TYPES = ['katalog', 'chapter_list'];
 
 /**
  * Build options for fetchPage from website + page config.
@@ -23,9 +26,12 @@ function buildFetchOptions(website, pageConfig) {
     customHeaders: {},
     cookies: [],
     blockImages: pageConfig?.block_images === 1,
-    // Labels the crawl session in the manual CAPTCHA dashboard
-    sessionMeta: { website: website.name, pageType: pageConfig?.page_type || 'unknown' },
-    // Match the browser clock to the proxy's country (see Cloudflare guide)
+    // The "browser" image cache downloads images with fetch() inside the page, which needs
+    // a browser that can read cross-origin responses — only started that way when used
+    crossOriginFetch: !!website.image_proxy
+      && (website.image_cache_method || 'browser') === 'browser'
+      && !NO_IMAGE_PAGE_TYPES.includes(pageConfig?.page_type),
+    // Match the browser clock to the proxy's country
     timezone: website.timezone || null,
   };
 
@@ -305,15 +311,14 @@ function toAbsoluteUrl(v, pageUrl) {
 /**
  * Proxy a list of image URLs, honouring the website's cache method.
  *
- * data: URLs (e.g. from canvas.toDataURL(), used by readers that paint pages into a
- * <canvas> instead of an <img>) are always decoded and cached server-side: they carry
- * their own bytes, so there is nothing to download, and returning megabytes of base64
- * in the JSON — or stuffing it into a lazy-proxy query string — is not viable.
+ * data: URLs (images inlined in the HTML) are always decoded and cached server-side:
+ * they carry their own bytes, so there is nothing to download, and returning megabytes
+ * of base64 in the JSON — or stuffing it into a lazy-proxy query string — is not viable.
  *
  * Returns an array of proxied URLs aligned with the input.
  */
 async function proxyImageList(page, urls, ctx) {
-  const { websiteName, apiBaseUrl, sourceUrl, useProxyMethod, useNodeMethod, intercepted, forceRefresh = false } = ctx;
+  const { websiteName, apiBaseUrl, sourceUrl, useProxyMethod, useNodeMethod, forceRefresh = false } = ctx;
   const out = new Array(urls.length);
   const remaining = [];
 
@@ -335,7 +340,7 @@ async function proxyImageList(page, urls, ctx) {
     } else if (useNodeMethod) {
       proxied = await cacheImagesNode(restUrls, websiteName, apiBaseUrl, sourceUrl, forceRefresh);
     } else {
-      proxied = await cacheImagesFromPage(page, restUrls, websiteName, apiBaseUrl, intercepted, forceRefresh);
+      proxied = await cacheImagesFromPage(page, restUrls, websiteName, apiBaseUrl, forceRefresh);
     }
     remaining.forEach((idx, k) => { out[idx] = proxied[k] || urls[idx]; });
   }
@@ -352,7 +357,7 @@ async function proxyImageList(page, urls, ctx) {
  * shapes: string, array, and object_array sub-fields.
  */
 async function proxyCustomFieldImages(page, customFields, customData, ctx) {
-  const { website, websiteName, apiBaseUrl, pageUrl, sourceUrl, useProxyMethod, useNodeMethod, intercepted } = ctx;
+  const { website, websiteName, apiBaseUrl, pageUrl, sourceUrl, useProxyMethod, useNodeMethod } = ctx;
   if (!website.image_proxy || !apiBaseUrl || !customFields.length) return;
 
   const targets = [];
@@ -388,13 +393,13 @@ async function proxyCustomFieldImages(page, customFields, customData, ctx) {
   if (!targets.length) return;
 
   const proxied = await proxyImageList(page, targets.map(t => t.url), {
-    websiteName, apiBaseUrl, sourceUrl, useProxyMethod, useNodeMethod, intercepted,
+    websiteName, apiBaseUrl, sourceUrl, useProxyMethod, useNodeMethod,
   });
   targets.forEach((t, i) => { if (proxied[i]) t.set(proxied[i]); });
 }
 
 /**
- * Fetch page using Puppeteer or simple HTTP based on use_js config.
+ * Fetch page using Lightpanda (JS rendering) or simple HTTP based on use_js config.
  */
 async function fetchPageAuto(url, options, config) {
   const useJs = config?.use_js !== 0;
@@ -408,8 +413,7 @@ async function fetchPageAuto(url, options, config) {
       }
       return await fetchPageSimple(url, options);
     } catch (err) {
-      // A manual-CAPTCHA timeout/abort/capacity error must not be retried — each retry
-      // would re-open a browser and re-enter the full manual-solve wait.
+      // A challenge page is not retried — every attempt would meet the same challenge
       if (err.captchaUnsolved) throw err;
       if (attempt < retryCount) {
         console.log(`[Retry] fetchPageAuto attempt ${attempt + 1}/${retryCount} failed: ${err.message}. Retrying in ${retryDelay}ms...`);
@@ -505,9 +509,6 @@ async function crawlKomikDetail(websiteName, url, apiBaseUrl, { includeHtml = fa
   const options = buildFetchOptions(website, config);
   const { page, browser, cfDetected } = await fetchPageAuto(url, options, config);
 
-  // Start intercepting images for caching (only for browser method with JS enabled)
-  const intercepted = (useNodeMethod || useProxyMethod) ? new Map() : startImageIntercept(page);
-
   try {
     const detail = await page.evaluate((sel, sourceUrl) => {
       // js: prefix helper — eval expression directly, otherwise use as CSS selector
@@ -560,7 +561,7 @@ async function crawlKomikDetail(websiteName, url, apiBaseUrl, { includeHtml = fa
         if (useNodeMethod) {
           cached = await cacheImageNode(absImage, websiteName, apiBaseUrl, url);
         } else {
-          cached = await cacheImage(page, absImage, websiteName, apiBaseUrl, intercepted);
+          cached = await cacheImage(page, absImage, websiteName, apiBaseUrl);
         }
         if (cached) detail.image = cached.proxyUrl;
       }
@@ -652,9 +653,6 @@ async function crawlChapter(websiteName, url, apiBaseUrl, { includeHtml = false 
   const options = buildFetchOptions(website, config);
   const { page, browser, cfDetected } = await fetchPageAuto(url, options, config);
 
-  // Start intercepting image responses for caching (only for browser method with JS enabled)
-  const intercepted = (useNodeMethod || useProxyMethod) ? new Map() : startImageIntercept(page);
-
   try {
     const result = await page.evaluate((sel) => {
       // js: prefix helper — eval expression directly
@@ -697,8 +695,7 @@ async function crawlChapter(websiteName, url, apiBaseUrl, { includeHtml = false 
     checkRequired({ title: result.title, images: result.imgSources, chapter_number: result.chapterNumber }, required, 'chapter');
 
     // Resolve relative URLs to absolute. Inline data:image/ sources are kept as-is —
-    // a canvas-based reader exports its pages that way (canvas.toDataURL() via a `js:`
-    // selector), and they get decoded + cached below like any other image.
+    // they get decoded + cached below like any other image.
     const pageUrl = page.url();
     const absoluteImages = result.imgSources.map(src => {
       if (typeof src !== 'string' || !src) return null;
@@ -711,7 +708,7 @@ async function crawlChapter(websiteName, url, apiBaseUrl, { includeHtml = false 
     if (website.image_proxy && apiBaseUrl) {
       finalImages = await proxyImageList(page, absoluteImages, {
         websiteName, apiBaseUrl, sourceUrl: url,
-        useProxyMethod, useNodeMethod, intercepted,
+        useProxyMethod, useNodeMethod,
         forceRefresh: true, // chapter images are always re-fetched
       });
     }
@@ -756,9 +753,6 @@ async function crawlCustom(websiteName, url, pageType, apiBaseUrl, { includeHtml
   const options = buildFetchOptions(website, config);
   const { page, browser, cfDetected } = await fetchPageAuto(url, options, config);
 
-  // Start intercepting images for caching (only for browser method with JS enabled)
-  const intercepted = (useNodeMethod || useProxyMethod) ? new Map() : startImageIntercept(page);
-
   try {
     // Custom page types extract data purely via custom_fields
     const customData = await extractCustomFields(page, customFields);
@@ -768,7 +762,7 @@ async function crawlCustom(websiteName, url, pageType, apiBaseUrl, { includeHtml
     await proxyCustomFieldImages(page, customFields, customData, {
       website, websiteName, apiBaseUrl,
       pageUrl: page.url(), sourceUrl: url,
-      useProxyMethod, useNodeMethod, intercepted,
+      useProxyMethod, useNodeMethod,
     });
 
     const result = {

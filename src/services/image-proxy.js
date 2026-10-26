@@ -135,33 +135,42 @@ async function downloadImageNode(imageUrl, referer) {
 }
 
 /**
- * Start intercepting image responses from the browser.
- * Captures image buffers as they load through Puppeteer (uses proxy if configured).
- * Returns a Map<url, { buffer, contentType }> that gets populated as images load.
+ * Download an image with fetch() inside the page, so it goes out the way the page's own
+ * requests do: same proxy, cookies, Referer. Also the only way to read a blob: URL.
+ *
+ * This replaces Chrome's "capture the image as it loads" approach: Lightpanda never reads
+ * more than the first 16 KB of an <img>, so there is no full image to capture. Cross-origin
+ * CDN images work because the crawl's browser runs with CORS off (see getBrowser).
+ * Returns { buffer, contentType } or null.
  */
-function startImageIntercept(page) {
-  const captured = new Map();
-  page.on('response', async (response) => {
-    try {
-      const url = response.url();
-      const ct = response.headers()['content-type'] || '';
-      if (!ct.startsWith('image/')) return;
-      const status = response.status();
-      if (status < 200 || status >= 300) return;
-      const buffer = await response.buffer();
-      if (buffer.length > 0) {
-        captured.set(url, { buffer, contentType: ct });
-      }
-    } catch { /* response may be unavailable for redirects, etc */ }
-  });
-  return captured;
+async function fetchImageInPage(page, imageUrl) {
+  let data = null;
+  try {
+    data = await page.evaluate(async (url) => {
+      try {
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) return null;
+        const ct = r.headers.get('content-type') || 'image/jpeg';
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        let binary = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        return { base64: btoa(binary), contentType: ct };
+      } catch { return null; }
+    }, imageUrl);
+  } catch { /* page may be closed */ }
+  if (!data || !data.base64) return null;
+  const buffer = Buffer.from(data.base64, 'base64');
+  return buffer.length ? { buffer, contentType: data.contentType } : null;
 }
 
 /**
- * Save a single image to cache from intercepted data or browser fetch (for blob: URLs).
+ * Save a single image to cache, downloaded through the browser (fetchImageInPage).
  * Returns { hash, proxyUrl } or null on failure.
  */
-async function cacheImage(page, imageUrl, websiteName, apiBaseUrl, intercepted, forceRefresh = false) {
+async function cacheImage(page, imageUrl, websiteName, apiBaseUrl, forceRefresh = false) {
   const hash = hashUrl(imageUrl);
 
   // Return cached if exists, not expired, and not forcing refresh
@@ -174,63 +183,9 @@ async function cacheImage(page, imageUrl, websiteName, apiBaseUrl, intercepted, 
   }
 
   try {
-    let imgBuffer, contentType;
-
-    if (imageUrl.startsWith('blob:')) {
-      // blob: URLs can only be fetched from within the browser context
-      const imgData = await page.evaluate(async (url) => {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) return null;
-          const ct = response.headers.get('content-type') || 'image/jpeg';
-          const buffer = await response.arrayBuffer();
-          const bytes = new Uint8Array(buffer);
-          let binary = '';
-          const chunkSize = 8192;
-          for (let i = 0; i < bytes.length; i += chunkSize) {
-            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-          }
-          return { base64: btoa(binary), contentType: ct };
-        } catch {
-          return null;
-        }
-      }, imageUrl);
-      if (!imgData || !imgData.base64) return null;
-      imgBuffer = Buffer.from(imgData.base64, 'base64');
-      contentType = imgData.contentType;
-    } else {
-      // Use intercepted response data (already downloaded by browser, through proxy)
-      const data = intercepted.get(imageUrl);
-      if (!data) {
-        // Retry: navigate browser to fetch the image directly (goes through proxy)
-        let retryData = null;
-        try {
-          const resp = await page.evaluate(async (url) => {
-            try {
-              const r = await fetch(url, { credentials: 'include' });
-              if (!r.ok) return null;
-              const ct = r.headers.get('content-type') || 'image/jpeg';
-              const buf = await r.arrayBuffer();
-              const bytes = new Uint8Array(buf);
-              let binary = '';
-              const chunkSize = 8192;
-              for (let i = 0; i < bytes.length; i += chunkSize) {
-                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-              }
-              return { base64: btoa(binary), contentType: ct };
-            } catch { return null; }
-          }, imageUrl);
-          retryData = resp;
-        } catch { /* page may be closed */ }
-
-        if (!retryData || !retryData.base64) return null;
-        imgBuffer = Buffer.from(retryData.base64, 'base64');
-        contentType = retryData.contentType;
-      } else {
-        imgBuffer = data.buffer;
-        contentType = data.contentType;
-      }
-    }
+    const data = await fetchImageInPage(page, imageUrl);
+    if (!data) return null;
+    const { buffer: imgBuffer, contentType } = data;
 
     const dir = ensureCacheDir(websiteName);
     const proxyName = buildProxyFilename(imageUrl, hash, contentType);
@@ -297,10 +252,9 @@ async function cacheImageNode(imageUrl, websiteName, apiBaseUrl, referer, forceR
 }
 
 /**
- * Cache an inline data: URL (e.g. produced by canvas.toDataURL()).
+ * Cache an inline data: URL (an image embedded in the HTML or produced by page JS).
  * The bytes are already in the string, so this decodes straight to disk — no network,
- * no browser. This is what makes canvas-rendered pages cacheable: the reader draws the
- * image into a <canvas> with no src, so the only way out is to export the pixels.
+ * no browser.
  */
 async function cacheImageData(dataUrl, websiteName, apiBaseUrl, forceRefresh = false) {
   const hash = hashUrl(dataUrl);
@@ -368,14 +322,14 @@ async function cacheImagesNode(imageUrls, websiteName, apiBaseUrl, referer, forc
 }
 
 /**
- * Cache multiple images in batch (browser intercept method).
+ * Cache multiple images in batch (browser method).
  * Throws error if any image fails to cache (no fallback to original URL).
  */
-async function cacheImagesFromPage(page, imageUrls, websiteName, apiBaseUrl, intercepted, forceRefresh = false) {
+async function cacheImagesFromPage(page, imageUrls, websiteName, apiBaseUrl, forceRefresh = false) {
   const results = [];
   const failedUrls = [];
   for (const url of imageUrls) {
-    const result = await cacheImage(page, url, websiteName, apiBaseUrl, intercepted, forceRefresh);
+    const result = await cacheImage(page, url, websiteName, apiBaseUrl, forceRefresh);
     if (result) {
       results.push(result.proxyUrl);
     } else {
@@ -543,7 +497,6 @@ async function proxyImageOnDemand(imageUrl) {
 }
 
 module.exports = {
-  startImageIntercept,
   cacheImage,
   cacheImageNode,
   cacheImageData,

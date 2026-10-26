@@ -6,12 +6,12 @@
 %>
 <aside class="offcanvas-lg offcanvas-start" tabindex="-1" id="sidebar" aria-labelledby="sidebarLabel">
   <div class="offcanvas-header border-bottom">
-    <span class="offcanvas-title fw-semibold" id="sidebarLabel"><i class="bi bi-bug-fill text-primary"></i> CrawlKomik</span>
+    <span class="offcanvas-title fw-semibold" id="sidebarLabel"><i class="bi bi-bug-fill text-primary"></i> PinguinCrawl</span>
     <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#sidebar" aria-label="Tutup menu"></button>
   </div>
   <div class="offcanvas-body">
     <div class="sidebar-inner">
-      <a href="/admin" class="sidebar-brand d-none d-lg-flex"><i class="bi bi-bug-fill text-primary"></i> CrawlKomik</a>
+      <a href="/admin" class="sidebar-brand d-none d-lg-flex"><i class="bi bi-bug-fill text-primary"></i> PinguinCrawl</a>
 
       <ul class="nav flex-column sidebar-nav gap-1">
         <li class="nav-item">
@@ -22,12 +22,6 @@
         <li class="nav-item">
           <a class="nav-link <%= _active(['websites']) %>" href="/admin/websites/new" <%- _current(['websites']) %>>
             <i class="bi bi-plus-circle"></i> Add Website
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link <%= _active(['captcha']) %>" href="/admin/captcha" <%- _current(['captcha']) %>>
-            <i class="bi bi-shield-lock"></i> CAPTCHA Sessions
-            <% if (_nav.captchaWaiting) { %><span class="badge rounded-pill text-bg-warning" title="Menunggu manual solve"><%= _nav.captchaWaiting %></span><% } %>
           </a>
         </li>
         <li class="nav-item">

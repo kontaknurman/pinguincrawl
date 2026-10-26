@@ -1,13 +1,13 @@
 <%
-  const _titles = { dashboard: 'Dashboard', websites: 'Add Website', 'website-edit': 'Edit Website', config: 'Page Config', captcha: 'CAPTCHA Sessions', logs: 'API Logs', storage: 'Storage', settings: 'Settings' };
+  const _titles = { dashboard: 'Dashboard', websites: 'Add Website', 'website-edit': 'Edit Website', config: 'Page Config', logs: 'API Logs', storage: 'Storage', settings: 'Settings' };
   const _nav = typeof nav !== 'undefined' && nav ? nav : {};
 %><!DOCTYPE html>
 <html lang="id" data-bs-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title><%= _titles[page] ? _titles[page] + ' · ' : '' %>CrawlKomik Admin</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230d6efd'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'%3EC%3C/text%3E%3C/svg%3E">
+  <title><%= _titles[page] ? _titles[page] + ' · ' : '' %>PinguinCrawl Admin</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230d6efd'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'%3EP%3C/text%3E%3C/svg%3E">
   <script>
     // Apply the saved theme before the first paint (no flash of the wrong theme)
     try { var t = localStorage.getItem('ck-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-bs-theme', t); } catch (e) {}
@@ -22,12 +22,9 @@
     <button class="btn btn-link text-body px-2" type="button" data-bs-toggle="offcanvas" data-bs-target="#sidebar" aria-controls="sidebar" aria-label="Buka menu">
       <i class="bi bi-list fs-3"></i>
     </button>
-    <a class="navbar-brand me-auto fw-semibold" href="/admin"><i class="bi bi-bug-fill text-primary"></i> CrawlKomik</a>
+    <a class="navbar-brand me-auto fw-semibold" href="/admin"><i class="bi bi-bug-fill text-primary"></i> PinguinCrawl</a>
     <% if (_nav.diskWarning) { %>
       <a class="btn btn-sm btn-outline-danger me-1" href="/admin/storage" title="Disk hampir penuh"><i class="bi bi-hdd"></i></a>
-    <% } %>
-    <% if (_nav.captchaWaiting) { %>
-      <a class="btn btn-sm btn-warning" href="/admin/captcha" title="CAPTCHA menunggu"><i class="bi bi-shield-exclamation"></i> <%= _nav.captchaWaiting %></a>
     <% } %>
   </nav>
 

@@ -1,7 +1,7 @@
 {
-  "name": "crawlkomik",
+  "name": "pinguincrawl",
   "version": "1.0.0",
-  "description": "Comic/Manga web crawler with admin panel",
+  "description": "Comic/Manga web crawler with admin panel, rendered with the Lightpanda browser",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
@@ -11,10 +11,13 @@
     "manga",
     "comic",
     "crawler",
-    "puppeteer"
+    "lightpanda"
   ],
   "author": "vxcozy",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "better-sqlite3": "^11.6.0",
     "ejs": "^3.1.10",
@@ -23,10 +26,7 @@
     "linkedom": "^0.18.12",
     "multer": "^2.1.0",
     "otpauth": "^9.5.0",
-    "puppeteer": "^23.7.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "qrcode": "^1.5.4",
-    "ws": "^8.18.0"
+    "puppeteer-core": "^25.16.0",
+    "qrcode": "^1.5.4"
   }
 }

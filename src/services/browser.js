@@ -1,15 +1,14 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const profileDirs = require('./profile-dirs');
+const dns = require('dns');
+const net = require('net');
+const puppeteer = require('puppeteer-core');
+const lightpanda = require('./lightpanda');
 
-puppeteer.use(StealthPlugin());
-
+// Only used by fetchPageSimple (plain HTTP mode). Lightpanda sends its own
+// "Lightpanda/1.0" User-Agent and refuses any value containing "Mozilla".
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const db = require('../models/database');
 const { detectCaptcha } = require('./captcha-detector');
-const captchaRegistry = require('./captcha-registry');
-const captchaTakeover = require('./captcha-takeover');
 
 // Concurrency limit — dynamic from admin settings, fallback to env, then default 3
 let activeBrowsers = 0;
@@ -38,13 +37,10 @@ function releaseBrowserSlot() {
   }
 }
 
-// Number of sessions currently blocked waiting for a manual CAPTCHA solve. Each holds
-// a browser slot, so we cap concurrent waits at (max - 1) to always reserve at least
-// one slot for normal crawling — otherwise a burst of challenges freezes the pool.
-let captchaWaiting = 0;
-function captchaWaitCapacity() {
-  return Math.max(1, getMaxConcurrent() - 1);
-}
+// A JS-only interstitial that clears on its own does so within a few seconds. Lightpanda
+// can't pass the interactive kind at all, so waiting the page's full timeout for one
+// (30 s by default) only delays the error.
+const CF_WAIT_MS = 10000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,149 +57,114 @@ function parseProxy(proxy) {
     const withProto = proxy.includes('://') ? proxy : `http://${proxy}`;
     const parsed = new URL(withProto);
     return {
-      host: `${parsed.hostname}:${parsed.port || 80}`,
+      server: `${parsed.protocol}//${parsed.hostname}:${parsed.port || 80}`,
+      hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
       username: parsed.username ? decodeURIComponent(parsed.username) : null,
       password: parsed.password ? decodeURIComponent(parsed.password) : null,
     };
   } catch {
     // Fallback: treat as host:port
-    return { host: proxy, username: null, password: null };
+    return { server: `http://${proxy}`, hostname: proxy.split(':')[0], username: null, password: null };
   }
 }
 
-async function getBrowser(proxy) {
-  // Fresh throwaway profile per browser (a shared one hits SingletonLock conflicts).
-  // It is deleted once Chrome has exited — see profile-dirs.js for why the old
-  // cleanup leaked one dir per crawl until /tmp ran out of space.
-  const userDataDir = await profileDirs.createProfileDir();
+/** The zone if Intl knows it — Lightpanda silently ignores one it doesn't. */
+function validTimezone(timezone) {
+  if (!timezone) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+    return timezone;
+  } catch {
+    console.warn(`[Browser] Invalid timezone "${timezone}" — using the server's`);
+    return null;
+  }
+}
 
+/**
+ * --block-private-networks also stops Lightpanda from reaching a proxy on a private
+ * address (squid on localhost, a VPN container on the Docker network), so exempt exactly
+ * the addresses the proxy host resolves to.
+ */
+async function proxyCidrs(proxyInfo) {
+  if (!proxyInfo) return [];
+  const host = proxyInfo.hostname;
+  const family = net.isIP(host);
+  const addrs = family ? [{ address: host, family }] : await dns.promises.lookup(host, { all: true }).catch(() => []);
+  return addrs.map((a) => `${a.address}/${a.family === 6 ? 128 : 32}`);
+}
+
+/**
+ * Start a Lightpanda server for one crawl and connect Puppeteer to it.
+ *
+ * Unlike Chrome, these are process-wide Lightpanda options, which is why every crawl gets
+ * its own process:
+ *   timezone          Date/Intl zone (CDP Emulation.setTimezoneOverride is a no-op in Lightpanda)
+ *   blockImages       don't request <img> at all (when loaded, Lightpanda reads ≤16 KB of each,
+ *                     enough for load/error events and naturalWidth, never the whole image)
+ *   crossOriginFetch  the "browser" image cache downloads images with fetch() inside the page;
+ *                     CDN images are cross-origin, so CORS is switched off for the crawl. That
+ *                     would let the page's own scripts read any reachable URL, so private
+ *                     networks (localhost, LAN, cloud metadata) are blocked at the same time.
+ *   waitTimeout       page timeout; single transfers may take as long (Lightpanda default 15 s)
+ */
+async function getBrowser(proxy, { timezone = null, blockImages = false, crossOriginFetch = false, waitTimeout = 0 } = {}) {
   const proxyInfo = parseProxy(proxy);
 
-  // Headless is the default. Set browser_headless=0 to run headful — needed to pass
-  // Cloudflare's environment checks (which reload-loop in headless even after a manual
-  // solve). In Docker this requires a virtual display (Xvfb); see README.
-  const headless = db.getSetting('browser_headless') === '0' ? false : true;
+  // Stylesheets so computed styles (visibility checks, CSS-driven scripts) are real
+  const loadResources = blockImages ? ['stylesheet'] : ['stylesheet', 'image'];
 
-  const args = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--no-first-run',
-    '--no-zygote',
-    '--window-size=1920,1080',
-    // Hides the navigator.webdriver / automation flag some WAFs (Cloudflare) key on
-    '--disable-blink-features=AutomationControlled',
-    // Chrome >= ~120 no longer falls back to software WebGL automatically, so on a
-    // GPU-less server WebGL disappears entirely — and a browser with NO WebGL context
-    // is a strong bot signal (real Chrome always has one). This restores it.
-    '--enable-unsafe-swiftshader',
-  ];
-  // --disable-gpu kills the GPU process, and SwiftShader (software WebGL) runs inside
-  // it — so in headful, where we're specifically trying to look like a real browser,
-  // leave it off and let SwiftShader provide WebGL. Kept for headless, where it avoids
-  // GPU-process trouble in containers and the fingerprint is already a lost cause.
-  if (headless) {
-    args.push('--disable-gpu');
-  }
-  if (proxyInfo) {
-    args.push(`--proxy-server=${proxyInfo.host}`);
-  }
+  const lp = await lightpanda.launch({
+    proxy: proxyInfo ? proxyInfo.server : null,
+    timezone: validTimezone(timezone),
+    loadResources,
+    httpTimeoutMs: Math.max(15000, waitTimeout || 0),
+    disableCors: crossOriginFetch,
+    blockPrivateNetworks: crossOriginFetch,
+    allowCidrs: crossOriginFetch ? await proxyCidrs(proxyInfo) : [],
+  });
 
   let browser;
   try {
-    browser = await puppeteer.launch({
-      headless,
-      args,
-      userDataDir,
-      // Chrome writes its own temp files (process-singleton socket dir, shared-memory
-      // files under --disable-dev-shm-usage) to $TMPDIR. Inside the profile they are
-      // deleted with it instead of piling up in /tmp when Chrome gets killed.
-      env: { ...process.env, TMPDIR: profileDirs.chromeTmpDir(userDataDir) },
-      // Headful: use the REAL window size (null) instead of an Emulation viewport override.
-      // An override makes window.outerWidth/Height smaller than innerWidth/Height, which is
-      // impossible in a real browser and is exactly the kind of mismatch Cloudflare flags —
-      // so turning headless off alone would still fail the challenge.
-      defaultViewport: headless ? { width: 1920, height: 1080 } : null,
-    });
+    // defaultViewport null: Lightpanda reports a fixed 1920x1080 window; no emulation needed
+    browser = await puppeteer.connect({ browserWSEndpoint: lp.wsEndpoint, defaultViewport: null });
   } catch (err) {
-    profileDirs.releaseProfileDir(userDataDir, null); // launch failed — don't leave the profile behind
+    await lightpanda.stop(lp.proc);
     throw err;
   }
 
   // Store proxy auth info on browser instance for page.authenticate()
   browser._proxyAuth = proxyInfo?.username ? { username: proxyInfo.username, password: proxyInfo.password } : null;
+  browser._lightpanda = lp;
 
-  // Delete the profile once the Chrome process has exited (closed, crashed or killed)
-  profileDirs.releaseProfileDir(userDataDir, browser.process());
+  // Closing means disconnecting AND stopping the server — Lightpanda keeps running after
+  // its client leaves, and Puppeteer's own close() only sends Browser.close over CDP.
+  browser.close = async () => {
+    try {
+      await browser.disconnect();
+    } catch { /* connection already gone */ }
+    await lightpanda.stop(lp.proc);
+  };
 
   return browser;
 }
 
-// Build UA-client-hint metadata (sec-ch-ua*) that matches a UA string, so overriding
-// the UA doesn't leave the client hints inconsistent (or absent) — a signal WAFs flag.
-function uaClientHints(ua) {
-  const platform = /Windows/i.test(ua) ? 'Windows'
-    : /Mac OS X|Macintosh/i.test(ua) ? 'macOS'
-    : /Android/i.test(ua) ? 'Android'
-    : /(CrOS)/i.test(ua) ? 'Chrome OS'
-    : /Linux/i.test(ua) ? 'Linux'
-    : 'Windows';
-  const platformVersion = platform === 'Windows' ? '10.0.0'
-    : platform === 'macOS' ? '13.0.0'
-    : platform === 'Android' ? '13.0.0'
-    : '';
-  const mobile = /Mobile|Android/i.test(ua);
-  const v = (ua.match(/Chrome\/([\d.]+)/) || [])[1];
-  const major = v ? v.split('.')[0] : '';
-  // CDP Network.setUserAgentOverride requires the full metadata shape
-  const meta = {
-    platform,
-    platformVersion,
-    architecture: mobile ? '' : 'x86',
-    bitness: mobile ? '' : '64',
-    model: '',
-    mobile,
-    wow64: false,
-  };
-  if (major) {
-    meta.brands = [
-      { brand: 'Google Chrome', version: major },
-      { brand: 'Chromium', version: major },
-      { brand: 'Not_A Brand', version: '24' },
-    ];
-    const full = v.includes('.') ? v : `${major}.0.0.0`;
-    meta.fullVersionList = [
-      { brand: 'Google Chrome', version: full },
-      { brand: 'Chromium', version: full },
-      { brand: 'Not_A Brand', version: '24.0.0.0' },
-    ];
-  }
-  return meta;
+// Lightpanda refuses to impersonate another browser: a User-Agent containing "Mozilla"
+// is silently dropped (from setUserAgent and from extra headers alike) and the request
+// goes out as Lightpanda. Say so once per value instead of letting it look applied.
+const refusedUserAgents = new Set();
+function warnRefusedUserAgent(ua) {
+  if (refusedUserAgents.has(ua)) return;
+  refusedUserAgents.add(ua);
+  console.warn(`[Browser] Lightpanda ignores User-Agents containing "Mozilla" — "${ua}" is not used, requests identify as Lightpanda`);
 }
 
-async function createPage(browser, userAgent, customHeaders, cookies, localStorage, timezone) {
+async function createPage(browser, userAgent, customHeaders, cookies, localStorage) {
   const page = await browser.newPage();
 
-  // Match the browser clock to where the traffic appears to come from. Containers run
-  // in UTC, so a proxy in another country leaves IP geolocation and the page's timezone
-  // disagreeing — a geo-consistency mismatch WAFs check, and one that a residential
-  // proxy alone does NOT fix. Locale is deliberately left alone: overriding it makes
-  // navigator.language and navigator.languages disagree, which is worse than the default.
-  if (timezone) {
-    try {
-      await page.emulateTimezone(timezone);
-    } catch (err) {
-      console.warn(`[Browser] Invalid timezone "${timezone}": ${err.message}`);
-    }
-  }
-
-  // Only override the UA when the admin explicitly configured one. Otherwise leave the
-  // puppeteer-extra-stealth managed UA in place — it strips "HeadlessChrome" AND keeps
-  // sec-ch-ua / sec-ch-ua-platform consistent. Forcing a bare UA string here previously
-  // WIPED those client hints (and claimed Windows on a Linux box), which Cloudflare flags
-  // as a bot → the challenge reload-loops even after a correct manual solve.
+  // Only override the UA when the admin explicitly configured one
   if (userAgent) {
-    await page.setUserAgent(userAgent, uaClientHints(userAgent));
+    if (/mozilla/i.test(userAgent)) warnRefusedUserAgent(userAgent);
+    else await page.setUserAgent(userAgent);
   }
 
   // Authenticate proxy if credentials were provided
@@ -211,15 +172,12 @@ async function createPage(browser, userAgent, customHeaders, cookies, localStora
     await page.authenticate(browser._proxyAuth);
   }
 
-  // Only send headers the admin configured. We used to always inject
-  // "Accept-Language: en-US,en;q=0.9,id;q=0.8", but navigator.languages stays
-  // ["en-US","en"] — so the header advertised a language the JS environment didn't
-  // have. Real browsers are always consistent there, and that mismatch is exactly
-  // what a WAF compares. Chrome's own Accept-Language already matches.
+  // Only send headers the admin configured
   if (customHeaders && typeof customHeaders === 'object' && Object.keys(customHeaders).length > 0) {
     const headers = {};
     for (const [k, v] of Object.entries(customHeaders)) {
       headers[k] = String(v);
+      if (k.toLowerCase() === 'user-agent' && /mozilla/i.test(headers[k])) warnRefusedUserAgent(headers[k]);
     }
     await page.setExtraHTTPHeaders(headers);
   }
@@ -284,6 +242,7 @@ async function executeActions(page, actions) {
           if (action.value) await page.evaluate(action.value);
           break;
         case 'screenshot':
+          // Lightpanda has no graphical engine: this is a text-only rendering of the page
           await page.screenshot({ path: action.value || 'debug.png', fullPage: true });
           break;
         default:
@@ -385,28 +344,26 @@ async function extractCookies(page) {
  * Returns the page object (caller must close browser).
  */
 async function fetchPage(url, options = {}) {
-  const { proxy, userAgent, waitFor, waitTimeout, scrollToBottom, actions, customJs, customHeaders, cookies, localStorage, blockImages, sessionMeta, timezone } = options;
+  const { proxy, userAgent, waitFor, waitTimeout, scrollToBottom, actions, customJs, customHeaders, cookies, localStorage, blockImages, crossOriginFetch, timezone } = options;
 
-  // Manual CAPTCHA takeover — only active (and only adds overhead) when enabled in admin
-  const manualCaptcha = db.getSetting('captcha_manual_enabled') === '1';
+  // Fail fast with a clear message on CAPTCHA/WAF interstitials (Settings → Crawl & Browser)
+  const detectChallenges = db.getSetting('challenge_detection') !== '0';
 
   // Wait for available browser slot
   await acquireBrowserSlot();
 
   let browser;
   try {
-    browser = await getBrowser(proxy);
+    browser = await getBrowser(proxy, { timezone, blockImages, crossOriginFetch, waitTimeout });
   } catch (err) {
     releaseBrowserSlot(); // never acquired a browser to close later
     throw err;
   }
 
-  // Wrap browser.close to release the slot + finalize the captcha session (release once)
-  const originalClose = browser.close.bind(browser);
+  // Wrap browser.close to release the slot (once)
+  const originalClose = browser.close;
   let slotReleased = false;
   browser.close = async () => {
-    const s = browser._captchaSession;
-    if (s) captchaRegistry.finish(s.id, 'done');
     try {
       await originalClose();
     } finally {
@@ -415,91 +372,26 @@ async function fetchPage(url, options = {}) {
     }
   };
 
-  // Everything from page creation onward is guarded so any early failure (createPage,
-  // registration, request interception) still closes the browser and frees the slot,
-  // and marks the session failed instead of leaving it stranded as 'running'.
-  let captchaSession = null;
+  // Everything from page creation onward is guarded so any early failure still closes
+  // the browser (stopping its Lightpanda process) and frees the slot.
   try {
-    const page = await createPage(browser, userAgent, customHeaders, cookies, localStorage, timezone);
-
-    // Register the crawl session so the admin dashboard can see/queue it
-    if (manualCaptcha) {
-      captchaSession = captchaRegistry.register({
-        website: sessionMeta?.website,
-        pageType: sessionMeta?.pageType,
-        url,
-        page,
-      });
-      browser._captchaSession = captchaSession;
-    }
-
-    // Block image loading if configured (speeds up page load for non-image pages).
-    // page._allowImages is flipped on during a manual CAPTCHA solve so challenge
-    // assets (e.g. reCAPTCHA image tiles) still load.
-    if (blockImages) {
-      await page.setRequestInterception(true);
-      page.on('request', (req) => {
-        if (req.resourceType() === 'image' && !page._allowImages) {
-          req.abort();
-        } else {
-          req.continue();
-        }
-      });
-    }
+    const page = await createPage(browser, userAgent, customHeaders, cookies, localStorage);
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: waitTimeout || 30000 });
 
-    // Passive Cloudflare wait (stealth auto-resolve). Shortened when manual takeover
-    // is enabled so the admin is handed control quickly instead of waiting the full timeout.
-    let cfDetected = await waitForCloudflare(page, manualCaptcha ? 8000 : (waitTimeout || 30000));
+    let cfDetected = await waitForCloudflare(page, Math.min(waitTimeout || 30000, CF_WAIT_MS));
     if (cfDetected) {
       // After CF resolves, wait for content to load
       await delay(1000);
     }
 
-    // Manual CAPTCHA takeover — runs before waitFor so a challenge page doesn't
-    // fail the selector wait. Handles CF/Turnstile/reCAPTCHA/hCaptcha/text challenges.
-    if (manualCaptcha) {
+    // Before waitFor, so a challenge page reports itself instead of failing the selector wait
+    if (detectChallenges) {
       const detection = await detectCaptcha(page);
       if (detection.detected) {
-        // Reserve a slot for normal crawling — refuse to wait if too many already are.
-        if (captchaWaiting >= captchaWaitCapacity()) {
-          const e = new Error(`CAPTCHA detected (${detection.type}) but manual-solve capacity is full (${captchaWaiting}/${captchaWaitCapacity()} slots waiting)`);
-          e.captchaUnsolved = true; // non-retryable
-          throw e;
-        }
-        if (blockImages) {
-          // Let challenge assets load, and stop intercepting entirely: every intercepted
-          // request round-trips to Node, and that added latency is measurable by the
-          // challenge's own timing checks. Re-enabled after the solve.
-          page._allowImages = true;
-          try { await page.setRequestInterception(false); } catch { /* keep going */ }
-        }
-        const timeoutMs = parseInt(db.getSetting('captcha_timeout_ms')) || 180000;
-        captchaWaiting++;
-        let solve;
-        try {
-          solve = await captchaTakeover.waitForManualSolve(page, captchaSession, detection, { timeoutMs });
-        } finally {
-          captchaWaiting--;
-          await captchaTakeover.teardownCdp(captchaSession);
-        }
-        if (!solve.solved) {
-          const e = new Error(`CAPTCHA not solved (${detection.type}): ${solve.reason}`);
-          e.captchaUnsolved = true; // non-retryable — don't re-run the whole wait
-          throw e;
-        }
-        // Manual/auto solve succeeded — persist the session cookies the challenge set
-        cfDetected = true;
-        // Let Cloudflare finish its post-clearance reload/redirect before scraping,
-        // so we don't extract a transitional page.
-        await delay(1000);
-        try { await page.waitForNetworkIdle({ idleTime: 800, timeout: 8000 }); } catch { /* proceed anyway */ }
-        // Restore image blocking for the rest of the crawl
-        if (blockImages) {
-          page._allowImages = false;
-          try { await page.setRequestInterception(true); } catch { /* keep going */ }
-        }
+        const e = new Error(`Challenge page detected (${detection.type}: ${detection.reason}). Lightpanda cannot pass CAPTCHA/WAF challenges — crawl this site with a Chrome-based crawler such as crawlkomik.`);
+        e.captchaUnsolved = true; // non-retryable — every retry meets the same challenge
+        throw e;
       }
     }
 
@@ -521,14 +413,13 @@ async function fetchPage(url, options = {}) {
 
     return { page, browser, cfDetected };
   } catch (err) {
-    if (captchaSession) captchaRegistry.finish(captchaSession.id, 'failed', err.message);
     await browser.close();
     throw err;
   }
 }
 
 /**
- * Fetch a page with simple HTTP (no Puppeteer, no JS rendering).
+ * Fetch a page with simple HTTP (no browser, no JS rendering).
  * Returns a mock { page, browser, cfDetected } compatible with crawler.js.
  * Uses linkedom for DOM parsing + vm for evaluate() compatibility.
  */

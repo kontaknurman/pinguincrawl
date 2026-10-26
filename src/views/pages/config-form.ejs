@@ -156,7 +156,7 @@
               <%- reqSwitch('images') %>
             </div>
             <input type="text" id="sel_images" name="sel_images" class="form-control font-monospace" value="<%= selectors.images || '' %>" placeholder="#readerarea img" spellcheck="false">
-            <small class="form-hint">Selector semua gambar halaman chapter. Reader berbasis &lt;canvas&gt;? Lihat canvas.md.</small>
+            <small class="form-hint">Selector semua gambar halaman chapter.</small>
           </div>
         </div>
       <% } %>
@@ -170,13 +170,13 @@
     <div class="card-body">
       <div class="form-check form-switch mb-2">
         <input class="form-check-input" type="checkbox" role="switch" name="use_js" id="useJs" <%= jsOff ? '' : 'checked' %> onchange="toggleJsSections()">
-        <label class="form-check-label fw-semibold" for="useJs">Puppeteer JS Rendering</label>
+        <label class="form-check-label fw-semibold" for="useJs">JS Rendering (Lightpanda)</label>
       </div>
       <p class="small text-body-secondary mb-0" id="jsOnNote" style="<%= jsOff ? 'display:none' : '' %>">
-        Menggunakan Puppeteer (Chromium) untuk render JavaScript penuh. Mendukung wait, scroll, actions, custom JS, Cloudflare bypass.
+        Menggunakan browser Lightpanda untuk menjalankan JavaScript halaman. Mendukung wait, scroll, actions, custom JS. Tidak bisa melewati Cloudflare/CAPTCHA, dan tidak menggambar halaman — reader berbasis <code>&lt;canvas&gt;</code> tidak didukung.
       </p>
       <p class="small text-body-secondary mb-0" id="jsOffNote" style="<%= jsOff ? '' : 'display:none' %>">
-        Menggunakan HTTP request biasa (seperti CURL). Lebih cepat dan ringan, tapi tidak bisa render JavaScript, bypass Cloudflare, atau menjalankan actions. Proxy tidak didukung di mode ini.
+        Menggunakan HTTP request biasa (seperti CURL). Lebih cepat dan ringan, tapi tidak bisa render JavaScript atau menjalankan actions. Proxy tidak didukung di mode ini.
       </p>
     </div>
   </section>
@@ -215,7 +215,7 @@
             <input class="form-check-input" type="checkbox" role="switch" name="block_images" id="blockImages" <%= config && config.block_images ? 'checked' : '' %>>
             <label class="form-check-label" for="blockImages"><i class="bi bi-image me-1"></i>Block Image Loading</label>
           </div>
-          <small class="form-hint">Lewati loading gambar supaya lebih cepat. Jangan aktifkan untuk chapter yang butuh cache gambar.</small>
+          <small class="form-hint">Gambar tidak di-request sama sekali, jadi halaman lebih cepat selesai. Cache gambar tetap jalan — gambarnya diunduh terpisah.</small>
         </div>
       </div>
     </div>
@@ -392,7 +392,7 @@
     <div class="card-header"><h2 class="section-title"><i class="bi bi-code-slash me-1"></i>Custom JavaScript <small class="text-body-secondary fw-normal">(opsional)</small></h2></div>
     <div class="card-body">
       <textarea name="custom_js" class="form-control font-monospace" rows="5" spellcheck="false" aria-label="Custom JavaScript" placeholder="// Dijalankan setelah halaman load dan actions, sebelum scraping"><%= config ? (config.custom_js || '') : '' %></textarea>
-      <small class="form-hint">Di-evaluate di halaman sebelum ekstraksi data. Reader berbasis &lt;canvas&gt;: lihat snippet di canvas.md.</small>
+      <small class="form-hint">Di-evaluate di halaman sebelum ekstraksi data.</small>
     </div>
   </section>
 

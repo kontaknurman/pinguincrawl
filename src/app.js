@@ -70,18 +70,26 @@ app.use((err, req, res, next) => {
   }
 });
 
-// Disk housekeeping. Left alone, leftover browser profiles in /tmp and the image cache
-// fill the disk until crawls die with "ENOSPC ... mkdtemp '/tmp/crawlkomik-XXXXXX'".
-//  - startup + every 6h: everything (browser profiles, image cache incl. orphaned files,
-//    stale upload/backup temp files) — runs in the background, startup isn't blocked
-//  - every 30 min: leftover browser profiles
+// Disk housekeeping. Left alone, the image cache fills the disk until crawls die with ENOSPC.
+//  - startup + every 6h: everything (image cache incl. orphaned files, stale
+//    upload/backup temp files) — runs in the background, startup isn't blocked
 //  - every 15 min: expired images (retention, default 24h) + image cache size cap
 const storage = require('./services/storage');
-const { sweepStaleProfiles } = require('./services/profile-dirs');
 storage.runFullCleanup();
 setInterval(storage.runFullCleanup, 6 * 60 * 60 * 1000);
-setInterval(sweepStaleProfiles, 30 * 60 * 1000);
 setInterval(storage.runCacheMaintenance, 15 * 60 * 1000);
+
+// Lightpanda servers left running by a hard-killed earlier run (OOM, SIGKILL): at startup
+// and every 30 min. Normal exits stop their own browsers.
+const lightpanda = require('./services/lightpanda');
+lightpanda.sweepOrphans();
+setInterval(lightpanda.sweepOrphans, 30 * 60 * 1000);
+// Say right away whether the browser works, instead of at the first crawl
+lightpanda.getVersion().then((version) => {
+  const bin = lightpanda.executablePath();
+  if (version) console.log(`[Lightpanda] ${version} (${bin})`);
+  else console.warn(`[Lightpanda] ${bin ? `${bin} cannot be run` : 'not installed'} — crawls with JS rendering on will fail until it works (see README)`);
+});
 
 // API log cleanup — delete logs older than 2 weeks, runs every 12 hours
 const { deleteOldApiLogs, LOG_RETENTION_DAYS } = require('./models/database');
@@ -99,14 +107,10 @@ setInterval(cleanOldApiLogs, 12 * 60 * 60 * 1000);
 cleanOldApiLogs(); // run once at startup
 
 const server = app.listen(PORT, () => {
-  console.log(`CrawlKomik running on http://localhost:${PORT}`);
+  console.log(`PinguinCrawl running on http://localhost:${PORT}`);
   console.log(`Admin: http://localhost:${PORT}/admin`);
   console.log(`API:   http://localhost:${PORT}/api/katalog?website=<name>&url=...`);
 });
-
-// Manual CAPTCHA takeover — WebSocket relay for the admin dashboard
-const { initCaptchaWs } = require('./services/captcha-ws');
-initCaptchaWs(server);
 
 // Graceful shutdown
 function shutdown(signal) {

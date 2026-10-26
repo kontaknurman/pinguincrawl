@@ -1,4 +1,4 @@
-/* CrawlKomik admin — small progressive enhancements shared by every page.
+/* PinguinCrawl admin — small progressive enhancements shared by every page.
    Everything here is optional: forms and links keep working without JavaScript. */
 (function () {
   'use strict';

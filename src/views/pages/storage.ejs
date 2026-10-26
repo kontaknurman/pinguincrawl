@@ -1,7 +1,7 @@
 <%
   const r = report;
-  const fsLabel = (f) => (f.keys.length > 1 ? 'Disk server — profil browser, database & cache gambar'
-    : f.keys[0] === 'tmp' ? 'Temp — profil browser' : 'Data — database & cache gambar');
+  const fsLabel = (f) => (f.keys.length > 1 ? 'Disk server — temp, database & cache gambar'
+    : f.keys[0] === 'tmp' ? 'Temp sistem' : 'Data — database & cache gambar');
   const fsCol = r.filesystems.length > 1 ? 'col-lg-6' : 'col-12';
   const barClass = (pct) => (pct >= 90 ? 'bg-danger' : pct >= 75 ? 'bg-warning' : 'bg-success');
   const lc = r.lastCleanup;
@@ -66,18 +66,6 @@
       <div class="list-group list-group-flush">
         <div class="list-group-item py-3">
           <div class="d-flex justify-content-between gap-2">
-            <div class="fw-semibold"><i class="bi bi-window-stack me-1"></i>Profil browser sisa</div>
-            <div class="text-nowrap"><%= r.profiles.partial ? '≥ ' : '' %><%= fmtBytes(r.profiles.bytes) %></div>
-          </div>
-          <div class="small text-body-secondary mt-1">
-            <strong><%= fmtNumber(r.profiles.count) %></strong> folder <code><%= r.profiles.root %>/crawlkomik-*</code>
-            <% if (r.profiles.active) { %>(<%= r.profiles.active %> sedang dipakai browser aktif)<% } %>.
-            Normalnya dihapus begitu browser ditutup; sisa dari crash/restart dibersihkan otomatis tiap 30 menit.
-            <% if (r.profiles.lastSweep) { %>Sweep terakhir <time data-utc="<%= r.profiles.lastSweep.at %>" data-relative><%= new Date(r.profiles.lastSweep.at).toISOString().slice(0, 16).replace('T', ' ') %> UTC</time>, menghapus <%= r.profiles.lastSweep.removed %>.<% } %>
-          </div>
-        </div>
-        <div class="list-group-item py-3">
-          <div class="d-flex justify-content-between gap-2">
             <div class="fw-semibold"><i class="bi bi-images me-1"></i>Cache gambar</div>
             <div class="text-nowrap"><%= fmtBytes(r.imageCache.bytes) %></div>
           </div>
@@ -117,12 +105,11 @@
     <section class="card mb-4">
       <div class="card-header"><h2 class="section-title"><i class="bi bi-stars me-1"></i>Pembersihan otomatis</h2></div>
       <div class="card-body">
-        <p class="small text-body-secondary mb-2">Berjalan saat server start dan tiap 6 jam: profil browser sisa, gambar kedaluwarsa / melebihi batas, file cache yatim, dan file sementara.</p>
+        <p class="small text-body-secondary mb-2">Berjalan saat server start dan tiap 6 jam: gambar kedaluwarsa / melebihi batas, file cache yatim, dan file sementara. Lightpanda tidak menulis profil ke disk.</p>
         <% if (lc) { %>
           <div class="small">
             <div class="mb-1">Terakhir: <time data-utc="<%= lc.at %>"><%= new Date(lc.at).toISOString().slice(0, 16).replace('T', ' ') %> UTC</time> (<%= (lc.durationMs / 1000).toFixed(1) %> dtk)</div>
             <ul class="mb-0 ps-3">
-              <li><%= lc.profiles %> profil browser sisa</li>
               <li><%= lc.expired %> gambar kedaluwarsa<% if (lc.evicted) { %>, <%= lc.evicted %> dibuang karena batas ukuran<% } %></li>
               <li><%= lc.orphans %> file cache yatim (<%= fmtBytes(lc.orphanBytes) %>)</li>
               <li><%= lc.tempFiles %> file sementara</li>

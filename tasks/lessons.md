@@ -72,6 +72,15 @@
 
 ---
 
+## 2026-10-26 - Browser Engine
+
+**Mistake**: When porting from Chrome to Lightpanda, `page.emulateTimezone()` was assumed to work because the CDP call (`Emulation.setTimezoneOverride`) returned success — the page still reported UTC. Same family: Response-stage interception "worked" but delivered images cut at 16 KB, and `setUserAgent()` "worked" but silently dropped any UA containing "Mozilla".
+**Pattern**: A non-Chrome CDP server accepts methods it does not implement (stubs) or applies them partially. A successful CDP response proves nothing about the effect.
+**Rule**: When changing browser engine (or upgrading it), verify every behaviour by its *effect* — read the value back in the page, compare downloaded bytes with the original, look at what the server actually received. Prefer the engine's own process flags (`--timezone`, `--http-proxy`) over CDP emulation when both exist.
+**Applied**: `src/services/browser.js` `getBrowser()` (timezone/proxy/resources as Lightpanda flags), `src/services/image-proxy.js` `fetchImageInPage()`
+
+---
+
 ## 2026-03-20 - Feature Scope
 
 **Mistake**: When user asked for "custom config", implemented only custom JSON response fields. User actually wanted custom page types (new config types + API endpoints), not just custom fields within existing configs.

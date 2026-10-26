@@ -1,7 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, '..', '..', 'data', 'crawlkomik.db');
+const DB_PATH = path.join(__dirname, '..', '..', 'data', 'pinguincrawl.db');
 
 let db;
 
@@ -136,7 +136,7 @@ function initTables() {
     db.exec("ALTER TABLE websites ADD COLUMN timezone TEXT DEFAULT NULL");
   }
 
-  // Migration: add use_js column to page_configs (1=Puppeteer render, 0=simple HTTP)
+  // Migration: add use_js column to page_configs (1=browser render, 0=simple HTTP)
   const pcCols4 = db.prepare("PRAGMA table_info(page_configs)").all();
   if (!pcCols4.find(c => c.name === 'use_js')) {
     db.exec("ALTER TABLE page_configs ADD COLUMN use_js INTEGER DEFAULT 1");

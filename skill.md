@@ -87,10 +87,10 @@ See [references/task-templates.md](references/task-templates.md) for file templa
 - **Minimal Impact**: Only touch what's necessary. Avoid introducing bugs
 
 ## Tech
-- Runtime: Node.js 18+
+- Runtime: Node.js 22.12+
 - Framework API: Express.js
-- Browser Automation: Puppeteer (Chromium headless, bisa render JS penuh seperti human visit)
-- Proxy Support: puppeteer-extra + puppeteer-extra-plugin-stealth (anti-detection)
+- Browser Automation: Lightpanda (headless browser, render JS) via puppeteer-core over CDP — satu proses `lightpanda serve` per crawl (`src/services/lightpanda.js`)
+- Proxy Support: proxy per website diteruskan ke Lightpanda (`--http-proxy`), kredensial lewat `page.authenticate()`
 - Admin Panel: EJS template engine + Bootstrap 5 (server-side render, simple)
 - Database Config: SQLite via better-sqlite3 (zero config, single file)
 - Process Manager: PM2 (production)

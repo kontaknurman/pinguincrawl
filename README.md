@@ -1,47 +1,51 @@
-# CrawlKomik
+# PinguinCrawl
 
-Comic/Manga web crawler with admin panel. Uses Puppeteer for full JS rendering.
+Comic/Manga web crawler with admin panel. Pages are rendered with [Lightpanda](https://github.com/lightpanda-io/browser) — a headless browser built for automation — instead of Chrome.
+
+PinguinCrawl is [crawlkomik](https://github.com/kontaknurman/crawlkomik) with the browser swapped: same API, same admin panel, same database schema. What changes is what the browser can and cannot do.
+
+## Lightpanda vs Chrome (crawlkomik)
+
+| | crawlkomik (Chrome) | PinguinCrawl (Lightpanda) |
+|---|---|---|
+| Browser per crawl | Chromium + profil di `/tmp` | satu proses `lightpanda serve`, ±25 MB, start ±20 ms, tanpa file di disk |
+| Docker image | Alpine + Chromium + Xvfb + font | Debian slim + satu binary Lightpanda |
+| Cloudflare / CAPTCHA | stealth, mode headful, manual takeover | **tidak bisa dilewati** — crawl gagal cepat dengan pesan jelas |
+| User-Agent website | bebas | UA yang mengandung `Mozilla` **ditolak** Lightpanda (tidak mau menyamar jadi browser lain) |
+| Reader berbasis `<canvas>` | didukung | tidak — Lightpanda tidak menggambar halaman |
+| Action `screenshot` | gambar asli | rendering teks saja |
+
+Situs di balik Cloudflare/CAPTCHA tetap butuh crawler berbasis Chrome (crawlkomik).
 
 ## Features
 - **API endpoints** returning JSON (katalog, komik detail, chapter list, chapter images), optional `&html=true` to include raw scraped HTML
-- **Puppeteer + Stealth** for full JavaScript rendering like human visit
-  - **Toggle JS rendering per page config** — disable to use simple HTTP fetch (like CURL), faster and lighter
-  - When JS disabled: no Puppeteer browser, Wait/Scroll/Actions/Custom JS hidden in config UI
-- **Cloudflare WAF bypass** — auto-detect challenge page, wait for resolution, save session cookies
-- **Manual CAPTCHA takeover** — when a crawl hits a CAPTCHA that stealth can't auto-solve, an admin solves it live from the dashboard
-  - Detects Cloudflare/DDoS-Guard interstitials, Turnstile/reCAPTCHA/hCaptcha widgets, and "verify you are human" text challenges
-  - Live view via CDP screencast (`Page.startScreencast`) streamed over WebSocket to `/admin/captcha`
-  - Admin clicks & types directly on the streamed screen; input is relayed back with `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`
-  - Auto-continues when the challenge clears (DOM polling) or when admin clicks **Selesai**; crawl resumes normally and session cookies are saved
-  - In-memory session registry maps every crawl to a status (`running` / `waiting_captcha` / `solving` / `done` / `failed`) so multiple parallel workers can queue for attention
-  - Timeout (default 3 min, configurable) marks the session failed → flows into the existing retry logic
-  - Optional webhook notification (Slack/Discord `{text}`, or Telegram) when a session needs a manual solve
-  - Toggle on/off from the dashboard — when off, the crawler behaves exactly as before (passive Cloudflare wait only), zero overhead
-  - **Fingerprint self-check** — one click reports which bot signals are failing (headless mode, viewport vs screen, webdriver, WebGL/GPU, DISPLAY) with a fix for each
-- **Custom headers & cookies** per website (optional) — session cookies auto-saved after CF bypass
-- **Proxy support** per website
-- **Timezone per website** — samakan jam browser dengan negara proxy; container jalan di UTC, jadi proxy di negara lain bikin geolokasi IP dan timezone bertentangan (sinyal yang dicek Cloudflare)
+- **Lightpanda JS rendering** — runs the page's JavaScript (XHR/fetch, lazy-load, IntersectionObserver), cookies, localStorage, click/type/select actions
+  - **Toggle JS rendering per page config** — disable to use simple HTTP fetch (like CURL), no browser at all
+  - Each crawl gets its own Lightpanda process: proxy, timezone and cookies never leak between crawls, a crash only affects one crawl
+- **Challenge detection** — Cloudflare/DDoS-Guard interstitials, Turnstile/reCAPTCHA/hCaptcha widgets and "verify you are human" pages make the crawl fail fast with a clear error (not retried), instead of returning the challenge page as data. Toggle in Settings
+- **Cek Lightpanda** (Settings) — starts the browser and reports version, JS, cookies, the User-Agent it really sends and its timezone; per website it also opens the base URL through that website's proxy and says whether a challenge page came back
+- **Custom headers & cookies** per website (optional) — session cookies auto-saved when a challenge page clears by itself
+- **Proxy support** per website (`http://user:pass@host:port`)
+- **Timezone per website** — the browser clock (`Date`/`Intl`); the container runs in UTC
 - **Image proxy/cache** - caches images through server for blob URLs or referrer-restricted sources
   - Toggle per website in admin panel
-  - 3 methods: Browser Intercept, Node.js HTTP (with Referer), Lazy Proxy (cache on access)
+  - 3 methods: Browser (downloaded inside the page by Lightpanda: same proxy, cookies, Referer), Node.js HTTP (with Referer), Lazy Proxy (cache on access)
   - **Lazy Proxy**: images not downloaded at crawl time, cached on first access via `/api/image/v3/?url=...`
   - Chapter images always fresh (re-downloaded on every API hit) for browser/node methods
   - Cover images cached with reuse
   - Retention (default 24 jam) dan batas ukuran (MB, terlama dibuang dulu) diatur dari `/admin/storage`; file cache yatim (tanpa record DB) dibersihkan otomatis
-  - Handles blob: URLs, `data:` URLs (canvas exports), referrer-restricted images, normal URLs
+  - Handles blob: URLs, `data:` URLs, referrer-restricted images, normal URLs
   - JSON return auto-replaces image URLs with proxy URLs
   - Applies to built-in page types **and** custom page types (image URLs inside custom response fields)
-  - Canvas-based readers supported — see [canvas.md](canvas.md)
 - **Admin panel** (Bootstrap 5) to manage websites and crawl configs
   - **Responsive** — sidebar jadi menu geser di HP, tabel jadi kartu, tombol Simpan menempel di bawah form panjang
   - Light/dark mode, toast notifikasi, peringatan perubahan belum disimpan, validasi JSON langsung (+ tombol Rapikan)
-  - Halaman terpisah: Dashboard (ringkasan), Settings (crawl, akses API, keamanan, backup), Storage (disk)
+  - Halaman terpisah: Dashboard (ringkasan), Settings (crawl, browser, akses API, keamanan, backup), Storage (disk)
   - **Uji API** dari form config — buka endpoint dengan URL contoh di tab baru
 - **Disk housekeeping** (`/admin/storage`) — mencegah `ENOSPC: no space left on device`
-  - Meter ruang **dan inode** untuk `/tmp` (profil browser) dan `data/` (database, cache gambar), peringatan di dashboard saat hampir penuh
-  - Profil Chrome per crawl (`/tmp/crawlkomik-*`) dihapus setelah proses Chrome benar-benar keluar; sisa crash/restart dibersihkan saat start + tiap 30 menit
-  - Tombol **Bersihkan sekarang**: profil sisa, gambar kedaluwarsa/lewat batas, file cache yatim, upload/backup sementara
-  - Docker: log container dibatasi 3 × 10 MB (`docker-compose.yml`)
+  - Meter ruang **dan inode** untuk temp dan `data/` (database, cache gambar), peringatan di dashboard saat hampir penuh
+  - Tombol **Bersihkan sekarang**: gambar kedaluwarsa/lewat batas, file cache yatim, upload/backup sementara
+  - Docker: log container dibatasi 3 × 10 MB (`docker-compose.yml`), core dump Lightpanda dimatikan
 - **Custom page types** — admin can create custom page types beyond the 4 defaults, each with its own API endpoint `/api/custom/{name}`
   - Data extraction via Custom Response Fields (fully configurable from admin)
   - Full feature support: actions, wait, scroll, regex replace, custom JS, retry
@@ -49,7 +53,7 @@ Comic/Manga web crawler with admin panel. Uses Puppeteer for full JS rendering.
 - **Configurable CSS selectors** per page type per website
   - **Required selector toggle** — mark any selector as required; API returns error if result is empty
   - **`js:` prefix** — use JavaScript expressions instead of CSS selectors for complex extraction (e.g. finding table rows by label)
-- **Pre-scrape actions**: click, wait, scroll, type, select, evaluate JS
+- **Pre-scrape actions**: click, wait, scroll, type, select, evaluate JS, screenshot
 - **Custom JavaScript** injection before scraping
 - **Regex replace** per page config — transform extracted text in API response (fix entities, remove suffixes, etc.)
 - **Custom response fields** per page config — add extra fields to API JSON response via admin repeater UI
@@ -71,9 +75,9 @@ Comic/Manga web crawler with admin panel. Uses Puppeteer for full JS rendering.
   - **Backup & Restore** — download/upload database from admin dashboard
 
 ## Tech Stack
-- Runtime: Node.js 18+
+- Runtime: Node.js 22.12+
 - Framework: Express.js
-- Browser: Puppeteer + puppeteer-extra-plugin-stealth
+- Browser: [Lightpanda](https://github.com/lightpanda-io/browser) 1.0.2, driven over CDP with `puppeteer-core`
 - Database: SQLite (better-sqlite3)
 - Admin UI: EJS + Bootstrap 5
 - Process Manager: PM2 (production)
@@ -86,13 +90,57 @@ docker compose up -d      # http://localhost:3000
 docker compose logs -f    # view logs
 docker compose down       # stop
 ```
+The image downloads the Lightpanda release binary (amd64 and arm64). Upgrade by changing `ARG LIGHTPANDA_VERSION` in the `Dockerfile` and rebuilding (`docker compose up -d --build`).
+
+Running crawlkomik on the same server too? Both default to port 3000 — change the host port in `docker-compose.yml` (e.g. `"3001:3000"`).
 
 ### Manual
+Lightpanda must be on `PATH` (or set `LIGHTPANDA_EXECUTABLE_PATH`). Linux x86_64:
+```bash
+curl -L -o /usr/local/bin/lightpanda https://github.com/lightpanda-io/browser/releases/download/1.0.2/lightpanda-x86_64-linux
+chmod a+x /usr/local/bin/lightpanda
+lightpanda version
+```
+Other builds: `lightpanda-aarch64-linux`, `lightpanda-aarch64-macos`, `lightpanda-x86_64-macos`. Windows: install inside WSL2. The Linux binaries need **glibc** — they do not run on Alpine/musl.
+
 ```bash
 npm install
 npm start        # http://localhost:3000
 npm run dev      # with auto-reload
 ```
+
+### Environment
+| Variable | Default | |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `LIGHTPANDA_EXECUTABLE_PATH` | `lightpanda` on `PATH` | Lightpanda binary |
+| `MAX_BROWSERS` | `3` | concurrent browsers when not set in Settings |
+| `LIGHTPANDA_DISABLE_TELEMETRY` | set in Docker | Lightpanda sends usage telemetry unless this is set (to any value). The Docker image sets it; remove the `ENV` line to allow telemetry |
+| `LIGHTPANDA_DISABLE_CORE_DUMP` | set in Docker | no core dumps when the browser crashes |
+| `TRUST_PROXY` | – | `1` when behind nginx/Caddy |
+
+## Pindah dari crawlkomik
+1. crawlkomik: Settings → Backup & Restore → **Download Backup**.
+2. PinguinCrawl: Settings → Backup & Restore → **Restore** file tadi. (Database PinguinCrawl ada di `data/pinguincrawl.db`, jadi menyalin folder `data/` crawlkomik saja tidak cukup.)
+3. Website yang field **User Agent**-nya berisi `Mozilla/...`: kosongkan — Lightpanda mengabaikannya.
+4. Jalankan **Cek Lightpanda** (Settings) per website. Yang terdeteksi memasang challenge tetap di crawlkomik.
+
+Setelan headless, CAPTCHA takeover (timeout, webhook) dan fingerprint check sengaja tidak ada lagi.
+
+## Cara kerja browser
+- Tiap crawl menjalankan `lightpanda serve --port 0` sendiri, Puppeteer (`puppeteer-core`) terhubung lewat CDP, lalu prosesnya dihentikan begitu crawl selesai. Proxy, timezone, dan sub-resource yang dimuat adalah opsi per proses di Lightpanda, karena itu satu proses per crawl.
+- Stylesheet selalu dimuat (computed style asli). Gambar `<img>` dimuat kecuali **Block Image Loading** aktif — dan Lightpanda hanya membaca ±16 KB pertama tiap gambar, cukup untuk event `load`/`error`.
+- Cache gambar metode **Browser**: karena tidak ada gambar utuh yang bisa ditangkap, gambar diunduh dengan `fetch()` di dalam halaman. Gambar CDN beda origin, jadi crawl yang memakai metode ini berjalan dengan CORS dimatikan — dan **jaringan privat diblokir** (localhost, LAN, metadata cloud) supaya script halaman tidak bisa membaca layanan internal. Proxy di alamat privat (squid lokal, container VPN) otomatis dikecualikan.
+- Proses Lightpanda yang tertinggal karena Node di-kill paksa (OOM, `SIGKILL`) dibunuh saat server start dan tiap 30 menit.
+
+## Cloudflare, CAPTCHA & WAF
+Lightpanda tidak punya mesin grafis dan selalu mengaku sebagai Lightpanda, jadi challenge Cloudflare/Turnstile/reCAPTCHA/hCaptcha **tidak bisa dilewati** — tidak ada mode headful, stealth, atau ambil-alih manual seperti di crawlkomik.
+
+Dengan **Deteksi halaman CAPTCHA / challenge** aktif (Settings → Crawl & Browser, default aktif), crawl yang mendapat halaman challenge langsung gagal dengan error seperti:
+```
+Challenge page detected (cloudflare: Cloudflare challenge page markers). Lightpanda cannot pass CAPTCHA/WAF challenges — ...
+```
+Challenge yang murni JavaScript dan lolos sendiri ditunggu maksimal 10 detik; cookie-nya lalu disimpan ke website seperti biasa. Matikan deteksi hanya kalau halaman normal salah terdeteksi.
 
 ## API Endpoints (GET)
 | Endpoint | Params | Returns |
@@ -105,8 +153,6 @@ npm run dev      # with auto-reload
 | `/api/image/:hash` | - | Serve cached/proxied image |
 | `/api/image/v3/` | `url` | Lazy proxy: fetch, cache, serve on access |
 
-WebSocket: `/admin/captcha/ws` — admin-only (same auth cookie), relays screencast frames & input for manual CAPTCHA takeover.
-
 All crawl endpoints support optional `&html=true` — includes raw scraped HTML in the JSON response (useful for debugging selectors).
 
 Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=true`
@@ -114,7 +160,7 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 ## Admin Panel
 - URL: `http://localhost:3000/admin` (login required)
 - Default password: `admin` — change from Settings → Keamanan after first login (dashboard shows a warning until you do)
-- Works on phones: menu ☰ di kiri atas, CAPTCHA bisa di-solve dengan tap + kotak ketik
+- Works on phones: menu ☰ di kiri atas
 - Add/edit/delete websites
 - Configure CSS selectors per page type (katalog, komik_detail, chapter_list, chapter + custom types)
 - Create custom page types from dashboard — each gets `/api/custom/{name}` endpoint
@@ -126,77 +172,36 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 - Custom response fields — add extra fields to API response (string, array, object_array with sub-fields)
 - Custom headers & cookies per website (JSON fields in website form)
 - View API logs (`/admin/logs`) — filter, stats, delete all/errors/old; logs >2 weeks auto-deleted
-- Manual CAPTCHA takeover (`/admin/captcha`) — enable/disable, set timeout & notify webhook, watch live sessions, take over and solve challenges by hand
-- **Cek Fingerprint** (`/admin/captcha` → button) — reports which bot signals are bad on this server, so a looping Cloudflare challenge can be diagnosed instead of guessed at
-- Settings (`/admin/settings`) — max browsers, retry, headless, API key (+ generate), IP whitelist, password, 2FA, logout all devices
+- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, password, 2FA, logout all devices
 - Backup & restore database (Settings → Backup & Restore)
 - Storage (`/admin/storage`) — disk & inode usage, cleanup, image cache retention / size cap
 
-## Error `ENOSPC: no space left on device, mkdtemp '/tmp/crawlkomik-XXXXXX'`
-Disk (atau inode) server penuh. Penyebab utama di versi lama: tiap crawl meninggalkan folder profil Chrome di `/tmp` — cleanup jalan saat koneksi CDP putus, padahal Chrome masih menulis `Local State`/`Preferences` saat shutdown, jadi penghapusan gagal diam-diam. Sekarang profil dihapus setelah proses Chrome keluar, dan sisa lama dibersihkan **otomatis saat server start** (lalu tiap 30 menit).
-
-Setelah update: restart/rebuild (`docker compose up -d --build`), lalu cek `/admin/storage`. Kalau masih penuh, lihat bagian mana yang besar (cache gambar → turunkan retensi / pasang batas MB). Kalau pembuatan profil tetap gagal karena disk penuh, error API menyebutkan sisa ruang & inode.
+## Error `ENOSPC: no space left on device`
+Disk (atau inode) server penuh. Lightpanda tidak menulis profil ke disk, jadi biasanya penyebabnya cache gambar — cek `/admin/storage`, turunkan retensi atau pasang batas MB, lalu **Bersihkan sekarang**.
 
 Disk sudah 100% penuh sampai build gagal? Kosongkan dulu:
 ```bash
-docker exec crawlkomik sh -c 'rm -rf /tmp/crawlkomik-*'   # profil sisa versi lama
-docker compose down          # hapus container lama (sekaligus seluruh /tmp-nya)
+docker compose down          # hapus container lama
 docker image prune -f        # image lama dari build sebelumnya juga makan disk
 docker compose up -d --build
 ```
-
-## Reader pakai `<canvas>` (bukan `<img>`)
-Sebagian reader menggambar halaman ke `<canvas>`, jadi tidak ada `src` yang bisa diambil selector — dan biasanya juga *virtualized* (halaman dihapus lagi setelah keluar layar).
-
-Solusinya: snippet **Custom JavaScript** yang menangkap tiap halaman saat scroll, lalu selector diarahkan ke `#__canvas_extract img`. Hasilnya (`data:` URL) otomatis di-cache jadi file gambar asli, jadi JSON tetap ramping.
-
-**Panduan lengkap + snippet siap pakai: [canvas.md](canvas.md)**
-
-## Manual CAPTCHA Takeover
-When a crawl hits a CAPTCHA that stealth can't pass, an admin can solve it live instead of the request just failing.
-
-1. Enable it at `/admin/captcha` (**Enable manual takeover**). Set a timeout and, optionally, a Slack/Discord/Telegram webhook.
-2. Trigger a crawl as usual. If a challenge is detected, the crawl pauses and the session appears on `/admin/captcha` as **waiting captcha** (and a webhook fires if configured).
-3. Click **Ambil Alih** to open the live screen. Click and type directly on it — your mouse/keyboard go straight to the headless browser via CDP.
-4. When the challenge clears it auto-continues, or press **Selesai** to continue immediately (**Gagal** to abort). The crawl then finishes normally and returns its JSON.
-5. If nobody solves it within the timeout, the session is marked **failed** and the request errors out (honoring the configured retry count).
-
-When the toggle is off, crawling behaves exactly as before (passive Cloudflare wait only) with no added overhead.
-
-**Note on concurrency:** a session waiting for a manual solve keeps its browser open, so it occupies one of the `max_browsers` slots until it's solved or times out. If you expect several simultaneous challenges, raise **Max concurrent browsers** (Settings → Crawl & Browser) and/or keep the timeout modest so stuck sessions free their slot.
-
-### Cloudflare masih loop setelah di-solve?
-Challenge Cloudflare punya dua lapis: interaktif (checkbox) **dan** cek environment/fingerprint. Klik checkbox melewati lapis 1, tapi kalau lapis 2 menilai browsernya otomatis, halaman challenge muncul lagi — jadi masalahnya bukan di klik.
-
-Mulai dari `/admin/captcha` → **Cek Fingerprint** untuk melihat sinyal mana yang bermasalah, lalu ikuti urutan perbaikannya (matikan Headless → jangan paksa UA → reuse `cf_clearance` atau residential proxy).
-
-**Panduan lengkap, termasuk cara memakai ulang `cf_clearance` dari browser sendiri: [cloudflare.md](cloudflare.md)**
-
-### Session cookies persist per website
-Setelah challenge terlewati (otomatis atau manual), semua cookie clearance (mis. `cf_clearance`) diambil via CDP dan disimpan ke config website, lalu dipakai lagi pada crawl berikutnya. Ini hanya terjadi kalau crawl **selesai** — kalau loop terus, cookie tidak pernah tersimpan. `cf_clearance` terikat User-Agent + IP, jadi keduanya harus stabil.
 
 ## Folder Structure
 ```
 src/
   app.js              # Entry point
   models/database.js  # SQLite schema + CRUD
-  services/browser.js # Puppeteer + stealth + proxy (+ manual CAPTCHA hook)
-  services/profile-dirs.js # Chrome profile dirs in /tmp: create, delete after exit, sweep leftovers
+  services/lightpanda.js  # Lightpanda processes: start (port 0), stop, sweep orphans, version
+  services/browser.js # Puppeteer-core over CDP: per-crawl browser, page setup, actions, challenge check
+  services/browser-check.js # "Cek Lightpanda" self-check
   services/storage.js # Disk/inode report + cleanup jobs (Storage page)
   services/crawler.js    # Crawl logic per page type
   services/image-proxy.js # Image cache/proxy service
   services/captcha-detector.js # Detect CF/Turnstile/reCAPTCHA/hCaptcha/text challenges
-  services/captcha-registry.js # In-memory crawl-session registry (status per session)
-  services/captcha-takeover.js # CDP screencast + mouse/keyboard input relay
-  services/captcha-ws.js  # WebSocket relay (dashboard <-> Puppeteer)
-  services/notifier.js    # Optional Slack/Telegram webhook on manual-solve needed
-  services/fingerprint-check.js # Bot-signal self-check for the crawl browser
   routes/api.js       # API endpoints
-  middleware/auth.js  # Login auth middleware (+ WS handshake auth)
+  middleware/auth.js  # Login auth middleware
   routes/admin.js     # Admin panel routes
   views/              # EJS templates
   public/             # admin.css + admin.js (layout, theme, toasts, JSON check)
 json-return/          # Expected JSON format examples
-canvas.md             # Panduan scraping reader berbasis <canvas>
-cloudflare.md         # Panduan menembus Cloudflare (+ reuse cf_clearance)
 ```

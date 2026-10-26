@@ -23,7 +23,7 @@
             <div class="col-12">
               <label class="form-label" for="max_browsers">Max concurrent browsers</label>
               <input type="number" class="form-control" id="max_browsers" name="max_browsers" value="<%= maxBrowsers %>" min="1" max="50" inputmode="numeric">
-              <small class="form-hint">Jumlah browser Puppeteer yang boleh jalan bersamaan (1–50). Terlalu banyak bisa menyebabkan OOM.</small>
+              <small class="form-hint">Jumlah browser Lightpanda yang boleh jalan bersamaan (1–50). Tiap crawl memakai satu proses (±25 MB), jauh lebih ringan dari Chrome — tapi terlalu banyak tetap bisa menyebabkan OOM.</small>
             </div>
             <div class="col-sm-6">
               <label class="form-label" for="retry_count">Retry count</label>
@@ -36,14 +36,32 @@
             </div>
             <div class="col-12">
               <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" role="switch" id="browser_headless" name="browser_headless" <%= browserHeadless ? 'checked' : '' %>>
-                <label class="form-check-label" for="browser_headless">Headless browser</label>
+                <input class="form-check-input" type="checkbox" role="switch" id="challenge_detection" name="challenge_detection" <%= challengeDetection ? 'checked' : '' %>>
+                <label class="form-check-label" for="challenge_detection">Deteksi halaman CAPTCHA / challenge</label>
               </div>
-              <small class="form-hint">Matikan (headful) jika Cloudflare terus reload/loop walau CAPTCHA sudah di-solve. Di Docker butuh Xvfb (sudah otomatis).</small>
+              <small class="form-hint">Lightpanda tidak bisa melewati Cloudflare/CAPTCHA. Saat aktif, crawl yang mendapat halaman challenge langsung gagal dengan pesan jelas (tanpa retry). Matikan hanya kalau halaman normal salah terdeteksi.</small>
             </div>
           </div>
           <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-check-lg me-1"></i>Save Crawl Settings</button>
         </form>
+
+        <hr class="my-4">
+        <h3 class="h6">Browser</h3>
+        <% if (lightpanda.executable) { %>
+          <p class="small text-body-secondary mb-2"><span class="badge text-bg-success me-1">Lightpanda<%= lightpanda.version ? ' ' + lightpanda.version : '' %></span><code class="text-break-all"><%= lightpanda.executable %></code></p>
+        <% } else { %>
+          <div class="alert alert-danger py-2 small"><i class="bi bi-exclamation-octagon me-1"></i>Lightpanda tidak ditemukan — crawl dengan JS rendering akan gagal. Lihat README untuk instalasi, atau set <code>LIGHTPANDA_EXECUTABLE_PATH</code>.</div>
+        <% } %>
+        <div class="input-group input-group-sm">
+          <select id="checkWebsite" class="form-select" aria-label="Website untuk dicek">
+            <option value="">(tanpa website)</option>
+            <% websites.forEach(w => { %>
+              <option value="<%= w.name %>"><%= w.name %></option>
+            <% }) %>
+          </select>
+          <button type="button" id="btnBrowserCheck" class="btn btn-outline-info"><i class="bi bi-activity me-1"></i>Cek Lightpanda</button>
+        </div>
+        <small class="form-hint">Menjalankan browser crawler lalu melaporkan hasilnya (JSON, tab baru). Pilih website untuk sekalian membuka base URL-nya dengan proxy, User-Agent, dan header milik website itu — termasuk apakah situsnya memasang challenge.</small>
       </div>
     </section>
   </div>
@@ -177,6 +195,11 @@
     input.value = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
     input.focus();
     if (window.ck) ck.toast('Key baru dibuat — klik Save API Key untuk menyimpan', 'info');
+  });
+  const btnCheck = document.getElementById('btnBrowserCheck');
+  if (btnCheck) btnCheck.addEventListener('click', () => {
+    const w = document.getElementById('checkWebsite').value;
+    window.open('/admin/browser-check' + (w ? '?website=' + encodeURIComponent(w) : ''), '_blank');
   });
   <% if (focusSection) { %>
   const target = document.getElementById(<%- JSON.stringify(focusSection) %>);

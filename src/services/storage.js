@@ -1,5 +1,5 @@
 /**
- * Disk usage overview + housekeeping for everything CrawlKomik writes to disk.
+ * Disk usage overview + housekeeping for everything PinguinCrawl writes to disk.
  *
  * Powers /admin/storage — so a filling disk shows up (and can be fixed from the panel)
  * before crawls start failing with ENOSPC — and the periodic cleanup jobs in app.js.
@@ -9,12 +9,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const db = require('../models/database');
-const profileDirs = require('./profile-dirs');
 const imageProxy = require('./image-proxy');
 
 const DATA_DIR = path.dirname(db.getDbPath());
 const UPLOAD_TMP_DIR = path.join(DATA_DIR, 'tmp');   // multer uploads for DB restore
-const BACKUP_RE = /^crawlkomik-backup-.*\.db$/;       // VACUUM INTO snapshots for download
+const BACKUP_RE = /^pinguincrawl-backup-.*\.db$/;     // VACUUM INTO snapshots for download
 const STALE_MS = 60 * 60 * 1000;
 // Warn when a filesystem gets this full — well before ENOSPC
 const LOW_FREE_BYTES = 1024 * 1024 * 1024;
@@ -49,7 +48,7 @@ function filesystemUsage(dir) {
   };
 }
 
-/** The filesystems CrawlKomik writes to: temp (browser profiles) and data (DB, cache). */
+/** The filesystems PinguinCrawl writes to: temp (system scratch space) and data (DB, cache). */
 function filesystems() {
   const list = [];
   for (const [key, dir] of [['tmp', os.tmpdir()], ['data', DATA_DIR]]) {
@@ -110,22 +109,12 @@ async function listBackups() {
 async function getStorageReport() {
   const deadline = Date.now() + 2500;
 
-  const profileList = await profileDirs.listProfileDirs();
-  const profiles = { count: profileList.length, bytes: 0, files: 0, partial: false, ...profileDirs.getProfileState() };
-  for (const dir of profileList) {
-    const r = await dirUsage(dir, deadline);
-    profiles.bytes += r.bytes;
-    profiles.files += r.files;
-    if (r.partial) { profiles.partial = true; break; }
-  }
-
   const dbPath = db.getDbPath();
   const backups = await listBackups();
   const uploads = await dirUsage(UPLOAD_TMP_DIR, deadline);
 
   return {
     filesystems: filesystems(),
-    profiles,
     imageCache: {
       ...db.getImageCacheTotals(),
       dir: imageProxy.CACHE_DIR,
@@ -182,23 +171,21 @@ async function cleanStaleTempFiles({ minAgeMs = STALE_MS } = {}) {
 }
 
 /**
- * Everything at once: leftover browser profiles, image cache (expired, over cap,
- * orphaned files) and stale temp files. Runs at startup, every 6 hours and from the
- * Storage page. Concurrent calls share one run.
+ * Everything at once: image cache (expired, over cap, orphaned files) and stale temp
+ * files. Runs at startup, every 6 hours and from the Storage page. Concurrent calls
+ * share one run.
  */
 function runFullCleanup() {
   if (!cleaning) {
     cleaning = (async () => {
       const started = Date.now();
       try {
-        const profiles = await profileDirs.sweepStaleProfiles();
         const cache = runCacheMaintenance();
         const orphans = await imageProxy.removeOrphanImages();
         const tempFiles = await cleanStaleTempFiles();
         lastCleanup = {
           at: Date.now(),
           durationMs: Date.now() - started,
-          profiles: profiles.removed,
           expired: cache.expired,
           evicted: cache.evicted,
           orphans: orphans.removed,

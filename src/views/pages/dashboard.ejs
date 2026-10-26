@@ -3,7 +3,6 @@
   const bs = typeof browserStatus !== 'undefined' && browserStatus ? browserStatus : { active: 0, queued: 0, max: 3 };
   const dataFs = filesystems.find(f => f.keys.includes('data')) || filesystems[0];
   const lowFs = filesystems.find(f => f.low);
-  const waiting = typeof nav !== 'undefined' && nav ? nav.captchaWaiting : 0;
   // Never show proxy credentials (user:pass@) on screen
   const hideCreds = (p) => String(p || '').replace(/\/\/[^@/]*@/, '//').replace(/^[^/@]*@/, '');
   const exampleSite = websites.length ? websites[0].name : 'mywebsite';
@@ -32,12 +31,6 @@
     Kalau penuh, crawl gagal dengan <code>ENOSPC</code>.
   </div>
   <a href="/admin/storage" class="btn btn-sm btn-danger flex-shrink-0">Buka Storage</a>
-</div>
-<% } %>
-<% if (waiting) { %>
-<div class="alert alert-info d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
-  <div class="flex-grow-1"><i class="bi bi-shield-exclamation me-1"></i><strong><%= waiting %></strong> sesi crawl menunggu CAPTCHA di-solve manual.</div>
-  <a href="/admin/captcha" class="btn btn-sm btn-info flex-shrink-0">Ambil alih</a>
 </div>
 <% } %>
 

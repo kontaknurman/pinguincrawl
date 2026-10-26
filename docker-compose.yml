@@ -1,7 +1,7 @@
 services:
-  crawlkomik:
+  pinguincrawl:
     build: .
-    container_name: crawlkomik
+    container_name: pinguincrawl
     ports:
       - "3000:3000"
     volumes:

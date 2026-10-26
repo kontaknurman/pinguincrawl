@@ -1,65 +1,48 @@
-# Task: Fix `ENOSPC: no space left on device, mkdtemp '/tmp/crawlkomik-XXXXXX'` + admin responsive
+# Task: Ganti browser crawler dari Chrome ke Lightpanda (repo baru pinguincrawl)
 
-## Bug Report (user)
-"error ENOSPC: no space left on device, mkdtemp '/tmp/crawlkomik-XXXXXX' — dan perbaiki tampilan
-admin, buat agar responsive dan user friendly"
+## Permintaan (user)
+"crawlkomik repo ini gunanya untuk crawl komik, tapi saya ingin mengganti browser yang dipakai dari
+chrome ke https://github.com/lightpanda-io/browser pada kontaknurman/pinguincrawl repo, hanya edit
+pinguincrawl repo"
 
-## Diagnosis (direproduksi dengan Chromium asli)
-- **Setiap crawl membocorkan folder profil Chrome.** `getBrowser()` membuat
-  `/tmp/crawlkomik-XXXXXX` lalu menghapusnya di event `disconnected` — event itu terjadi saat socket
-  CDP tertutup, padahal Chrome masih menulis `Local State`/`Preferences` waktu shutdown. `fs.rm`
-  kalah balapan (ENOTEMPTY) dan error-nya ditelan callback kosong. Repro: **8 dari 8 crawl** dalam
-  satu proses meninggalkan foldernya. Ribuan folder × puluhan inode → disk/inode penuh → `mkdtemp`
-  gagal dengan ENOSPC.
-- Jalur bocor lain: `puppeteer.launch` gagal (folder tidak pernah dihapus); proses Node di-restart
-  (pm2/docker) saat browser terbuka (folder 7–8 MB lengkap dengan cache tertinggal); Chrome yang
-  di-kill meninggalkan `/tmp/.org.chromium.Chromium.*` (dir socket singleton).
-- **Bug kedua (cache gambar):** `getExpiredImages()` membandingkan `created_at`
-  (`"2026-10-02 23:55:00"`) dengan cutoff ISO (`"2026-10-02T…Z"`) sebagai string — spasi < `T`,
-  jadi semua gambar dari hari UTC sebelumnya dianggap kedaluwarsa. Terbukti: gambar umur 35 menit
-  terhapus saat cleanup jam 00:30 UTC → URL proxy yang baru dibagikan jadi 404.
-- Pemakan disk lain tanpa batas: log container Docker (json-file tanpa rotasi), cache gambar tanpa
-  batas ukuran, file cache yatim (restore DB / URL di-cache ulang), snapshot backup yang gagal.
+## Temuan (diuji langsung dengan Lightpanda 1.0.2 + puppeteer-core 25)
+- Lightpanda adalah **server CDP** (`lightpanda serve`), bukan binary yang bisa di-`launch` Puppeteer.
+  Satu koneksi = satu page. Start ±20 ms, puncak memori ±25 MB per proses.
+- Jalan: goto/networkidle2, evaluate, XHR/fetch, cookies (`Network.getAllCookies`), extra headers,
+  `evaluateOnNewDocument` (localStorage), click/type/select, request interception, proxy + `page.authenticate`.
+- **`Emulation.setTimezoneOverride` diterima tapi tidak berefek** (stub) → timezone harus lewat flag
+  `--timezone` saat proses start. Proxy & sub-resource juga opsi per proses → satu proses per crawl.
+- **UA berisi "Mozilla" ditolak** (diam-diam) baik lewat `setUserAgent` maupun extra headers — kebijakan
+  Lightpanda, tidak diakali. Stealth plugin tidak relevan lagi.
+- `<img>` hanya dibaca ±16 KB (juga lewat Fetch interception tahap Response) → capture gambar ala Chrome
+  menghasilkan gambar terpotong. `fetch()` di halaman membaca utuh, tapi CDN beda origin kena CORS
+  → `--disable-features cors` + `--block-private-networks` (+ kecualikan IP proxy).
+- Tidak ada `Page.startScreencast`, screenshot hanya rendering teks, canvas stub, tanpa WebGL →
+  manual CAPTCHA takeover, fingerprint check, headful, canvas reader tidak mungkin.
+- Binary Linux butuh glibc → image Docker pindah dari Alpine ke Debian slim.
 
 ## Plan
-- [x] 1. `services/profile-dirs.js`: buat profil (ENOSPC → sweep sisa lalu coba lagi, error jelas
-       kalau tetap penuh), hapus **setelah proses Chrome exit** dengan retry, `$TMPDIR` Chrome di
-       dalam profil, sweep sisa (startup + tiap 30 menit) dengan cek "masih dipakai" via `/proc`
-- [x] 2. `browser.js`: pakai modul itu; launch gagal → hapus profil; slot browser selalu dilepas
-       walau `close()` throw
-- [x] 3. Cache gambar: perbaiki perbandingan tanggal, retensi & batas ukuran bisa diatur, hapus file
-       yatim; `services/storage.js` (laporan ruang + inode, pembersihan terjadwal); rotasi log Docker
-- [x] 4. Admin responsive: layout baru (sidebar → offcanvas di HP), light/dark, toast (PRG),
-       halaman Settings + Storage, form website/config/logs/captcha didesain ulang
-- [x] 5. Verifikasi + README
-
-## Implementasi singkat
-- Profil dihapus di listener `exit` proses Chrome (bukan `disconnected`), `rm` di-retry untuk
-  ENOTEMPTY/EBUSY. Sweep hanya menyentuh nama hasil mkdtemp (`crawlkomik-` + 6 karakter) yang isinya
-  memang profil Chrome, milik uid sendiri, >1 menit, dan tidak dipakai proses mana pun
-  (`--user-data-dir` di `/proc/*/cmdline`; fallback `SingletonLock`).
-- Admin: Post/Redirect/Get — handler redirect dengan `?ok=<kode>`, halaman menampilkan toast dari
-  teks tetap (bukan isi query). Validasi JSON (headers/cookies/localStorage) + timezone di server,
-  validasi JSON langsung di browser. Form config: bar Simpan menempel, peringatan perubahan belum
-  disimpan, panel **Uji API**. CAPTCHA: pointer events (tap di HP), kotak ketik, layar penuh;
-  daftar sesi tidak lagi di-render ulang tiap detik (tap sempat hilang).
+- [x] 1. Import snapshot crawlkomik (2562a1a) sebagai commit pertama
+- [x] 2. `services/lightpanda.js`: spawn `serve --port 0`, baca alamat dari log, stop SIGTERM→SIGKILL,
+       kill anak saat Node exit, sweep proses yatim (marker env `PINGUINCRAWL_OWNER_PID`)
+- [x] 3. `browser.js`: puppeteer-core `connect`, opsi per proses (proxy, timezone, gambar, CORS),
+       warning UA Mozilla, deteksi challenge → error jelas tanpa retry
+- [x] 4. Cache gambar metode browser via `fetch()` di halaman; buang intercept
+- [x] 5. Hapus takeover CAPTCHA (WS/registry/notifier), profil Chrome, fingerprint check, setelan
+       headless; tambah toggle deteksi challenge + **Cek Lightpanda**
+- [x] 6. Dockerfile Debian + binary Lightpanda (pin versi), package.json, README, branding PinguinCrawl
+- [x] 7. Verifikasi end-to-end
 
 ## Review
-Bocor profil **8/8 → 0/8**. Test (semua di scratchpad, tidak masuk repo):
-- Sweep 15/15 — sisa lama/kosong terhapus; folder muda, nama mirip yang bukan profil, file biasa,
-  dan profil milik **proses lain yang masih hidup** tidak tersentuh; sweep paralel berbagi satu run.
-- ENOSPC self-heal 3/3 di tmpfs dengan batas inode: 29 profil sisa dibersihkan lalu berhasil;
-  disk penuh oleh file lain → error berisi sisa ruang/inode + petunjuk `/admin/storage`.
-- Restart: proses di-SIGINT saat browser terbuka → sisa 7.7 MB → hilang oleh sweep saat start.
-- Storage 19/19 — retensi (termasuk kasus bug string tanggal), retensi custom, batas ukuran
-  (terlama dibuang, sampai ≤90%), file yatim (yang baru ditulis aman), laporan disk/inode,
-  file temp basi.
-- UI E2E 81/81 (desktop 1440px + iPhone 13): tanpa horizontal overflow di semua halaman, 0 error
-  console/HTTP; alur buat website (JSON invalid diblok), config + visual editor, API, logs + modal,
-  storage, settings, tema, menu HP — dan **CAPTCHA di-solve dengan tap di HP** sampai crawl selesai.
-- Regresi 23/23: cache gambar metode node & browser (gambar tersaji), fingerprint check, backup
-  (snapshot terhapus) + restore (+ file sampah ditolak), 2FA enable/disable, hapus log, auth;
-  setelah semua crawl: **0** folder profil dan **0** `/tmp/.org.chromium.*`.
-
-**Lesson (masuk lessons.md):** jangan bersihkan resource milik child process di event "koneksi
-putus" — tunggu prosesnya benar-benar exit, dan jangan pernah menelan error cleanup.
+E2E **63/63** (app asli + Lightpanda asli, situs manga tiruan + CDN hotlink-protected + proxy auth,
+semua di scratchpad, tidak masuk repo):
+- katalog JS-rendered + cookie + custom header + localStorage + UA website + proxy auth (407 → retry)
+- detail (cover relatif di-cache utuh), chapter list dari XHR, chapter: gambar CDN beda origin 120 KB
+  utuh (bukan 16 KB), lazy `data-src`, `data:`, `blob:`; Referer lolos hotlink check
+- custom page type: gambar custom field, timezone `Asia/Jakarta`, UA website
+- challenge Cloudflare: error jelas, 1 request walau retry_count=2, ±11.6 s; deteksi off → diproses biasa
+- metode node & lazy proxy, block images (browser tidak me-request `<img>`), simple HTTP
+- 6 crawl paralel dengan max_browsers=2, 0 proses tersisa; SIGKILL app → proses yatim → dibunuh saat
+  start berikutnya; SIGTERM saat crawl → 0 proses tersisa
+- binary hilang → error API jelas, warning startup, alert di Settings
+- Situs nyata lewat proxy (Wikipedia): gambar upload.wikimedia.org ter-cache utuh (46 KB)
