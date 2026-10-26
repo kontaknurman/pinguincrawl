@@ -92,7 +92,15 @@ docker compose down       # stop
 ```
 The image downloads the Lightpanda release binary (amd64 and arm64). Upgrade by changing `ARG LIGHTPANDA_VERSION` in the `Dockerfile` and rebuilding (`docker compose up -d --build`).
 
-Running crawlkomik on the same server too? Both default to port 3000 — change the host port in `docker-compose.yml` (e.g. `"3001:3000"`).
+### Custom port
+One variable, `PORT`, sets the port the app listens on **inside** the container and **both sides** of the mapping — `PORT=6000` gives `6000:6000`:
+```bash
+echo "PORT=6000" > .env         # or: cp .env.example .env and edit it
+docker compose up -d --build    # → 0.0.0.0:6000->6000/tcp, app on http://localhost:6000
+```
+- Without compose: `docker run -e PORT=6000 -p 6000:6000 <image>`. Manual: `PORT=6000 npm start`.
+- `--build` makes the image's `EXPOSE` follow the new port too (hosting panels such as Coolify/Dokploy read it); the app itself already follows `PORT` at runtime.
+- Running crawlkomik on the same server? It also defaults to 3000 — give PinguinCrawl another `PORT`.
 
 ### Manual
 Lightpanda must be on `PATH` (or set `LIGHTPANDA_EXECUTABLE_PATH`). Linux x86_64:
@@ -112,7 +120,7 @@ npm run dev      # with auto-reload
 ### Environment
 | Variable | Default | |
 |---|---|---|
-| `PORT` | `3000` | HTTP port |
+| `PORT` | `3000` | HTTP port the app listens on (in Docker: inside the container, and both sides of the compose mapping) |
 | `LIGHTPANDA_EXECUTABLE_PATH` | `lightpanda` on `PATH` | Lightpanda binary |
 | `MAX_BROWSERS` | `3` | concurrent browsers when not set in Settings |
 | `LIGHTPANDA_DISABLE_TELEMETRY` | set in Docker | Lightpanda sends usage telemetry unless this is set (to any value). The Docker image sets it; remove the `ENV` line to allow telemetry |

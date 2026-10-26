@@ -53,7 +53,12 @@ RUN printf '%s\n' \
     > /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh
 
-EXPOSE 3000
+# Port the app listens on inside the container. docker-compose.yml feeds the same PORT
+# to this build arg, the environment and both sides of the port mapping, so PORT=6000
+# runs the app on 6000 and maps 6000:6000. `docker run -e PORT=…` overrides it too.
+ARG PORT=3000
+ENV PORT=${PORT}
+EXPOSE ${PORT}
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["pm2-runtime", "src/app.js"]

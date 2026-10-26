@@ -1,13 +1,18 @@
 services:
   pinguincrawl:
-    build: .
+    build:
+      context: .
+      args:
+        PORT: ${PORT:-3000}
     container_name: pinguincrawl
+    # One PORT for both sides of the mapping and for the app inside the container:
+    # PORT=6000 in .env (or `PORT=6000 docker compose up -d --build`) gives 6000:6000
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     volumes:
       - ./data:/app/data
     environment:
-      - PORT=3000
+      - PORT=${PORT:-3000}
     restart: unless-stopped
     # Docker keeps container output forever by default — cap it so logs can't fill the disk
     logging:
