@@ -141,3 +141,49 @@ fitur proxy jalan dengan baik serta tambahkan fitur rotate proxy setelahnya."
 - Docker (image dibangun ulang, `PORT=6000`): `ADMIN_PASSWORD` dari env, tambah admin, `docker exec -u
   pinguincrawl pinguincrawl node src/reset-admin.js admin` → sesi lama putus, password sementara
   memaksa ganti; file di `/app/data` tetap milik user `pinguincrawl`.
+
+---
+
+# Lanjutan: backup & restore per website
+
+## Permintaan (user)
+"Tambahkan fitur backup dan restore per web, samakan formatnya dengan backup yg sudah ada"
+
+## Temuan
+- Backup lengkap = `VACUUM INTO` seluruh database (`.db` SQLite); restore lengkap mengganti file
+  database (termasuk akun admin dan settings).
+- `websites.name` bebas (boleh `/`, spasi, kutip) → nama file unduhan harus disaring.
+- Urutan kolom `websites` berbeda antar database (tergantung urutan migrasi) → salin per nama kolom.
+- Backup per website yang ter-upload ke restore lengkap akan mengganti seluruh database dengan satu
+  website tanpa admin → harus ditolak.
+
+## Plan
+- [x] 1. `services/backup.js`: ekspor satu website ke file baru dengan skema persis milik database
+       (semua tabel + index, isi hanya baris website itu, page config, custom page type) + penanda
+       `settings.backup_scope = website`; tanpa admin/API key/session secret/log/cache
+- [x] 2. Baca website dari backup per website atau backup lengkap (dicocokkan per nama), kolom yang
+       tidak ada → default, kolom tak dikenal diabaikan; file dibuka read-only + `trusted_schema=OFF`
+- [x] 3. Restore di halaman website (ganti pengaturan + page config + custom type, id tetap, snapshot
+       `.pre-restore` dulu); restore di Add Website untuk website terhapus / dari server lain
+- [x] 4. Restore lengkap menolak backup per website; tombol unduh di Dashboard; README
+- [x] 5. Verifikasi
+
+## Review
+- E2E **46/46** (app asli): file unduhan bernama `pinguincrawl-backup-<website>-<waktu>.db`, tabel/
+  index/kolom identik dengan backup lengkap, hanya baris website itu, settings hanya penanda, tanpa
+  admin/log/cache, byte file tidak memuat API key / session secret / hash password / website lain,
+  file mandiri (tanpa `-wal`), tidak ada file sementara tertinggal; restore setelah website diubah →
+  pengaturan, page config, custom type kembali (id sama), website lain + cache + log + API key + admin
+  utuh, `.pre-restore` berisi keadaan sebelum restore, crawl jalan dengan config hasil restore; backup
+  website lain ditolak; restore dari backup lengkap (dicocokkan nama) dan pesan jelas kalau tidak ada;
+  restore lengkap menolak backup per website (database tidak berubah); Add Website: website terhapus
+  kembali (id baru), duplikat ditolak, backup lengkap minta nama / nama salah / nama dari backup
+  lengkap; file sampah/kosong/`websites` berupa VIEW ditolak di ketiga form; tanpa file; backup dengan
+  kolom tambahan (versi lebih baru); backup crawlkomik asli (kolom `proxy_rotation` tidak ada →
+  default, lalu crawl jalan) + impor via Add Website; nama website aneh → nama file aman.
+- UI di browser sungguhan (Playwright, 1440px + 390px) **36/36**: download dari halaman website dan
+  Dashboard, ubah → restore dengan konfirmasi → nilai lama kembali, error website lain di bagian
+  Backup (ter-scroll, tombol tidak tertutup toast), hapus → Add Website → restore, tanpa error JS /
+  overflow.
+- Suite lain diulang: E2E **63/63**, rotasi **21/21**, migrasi **11/11**, auth **95/95**, body aneh
+  **12/12**, UI **47/47**, UI auth **46/46**.

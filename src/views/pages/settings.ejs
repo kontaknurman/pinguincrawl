@@ -169,12 +169,12 @@
         <div class="row g-4">
           <div class="col-lg-6">
             <h3 class="h6">Download backup</h3>
-            <p class="small text-body-secondary">File SQLite berisi semua website, page config, settings, dan akun admin (hash password + secret 2FA) — simpan di tempat aman.</p>
+            <p class="small text-body-secondary">File SQLite berisi semua website, page config, settings, dan akun admin (hash password + secret 2FA) — simpan di tempat aman. Untuk satu website saja: buka halaman website itu → <em>Backup &amp; Restore</em> (format file sama).</p>
             <a href="/admin/backup" class="btn btn-outline-info"><i class="bi bi-download me-1"></i>Download Backup</a>
           </div>
           <div class="col-lg-6">
             <h3 class="h6">Restore</h3>
-            <p class="small text-body-secondary">Upload file backup <code>.db</code>. Database saat ini otomatis di-backup dulu (<code>.pre-restore</code>). Akun admin ikut diganti dengan isi backup — setelahnya login dengan akun dari backup itu (backup crawlkomik / versi lama: username <code>admin</code> + password lamanya).</p>
+            <p class="small text-body-secondary">Upload file backup <code>.db</code>. Database saat ini otomatis di-backup dulu (<code>.pre-restore</code>). Akun admin ikut diganti dengan isi backup — setelahnya login dengan akun dari backup itu (backup crawlkomik / versi lama: username <code>admin</code> + password lamanya). Backup satu website di-restore dari halaman website-nya, bukan di sini.</p>
             <form method="POST" action="/admin/restore" enctype="multipart/form-data" data-confirm="Restore database? Data saat ini akan diganti.">
               <div class="input-group">
                 <input type="file" class="form-control" name="dbfile" accept=".db,.sqlite,.sqlite3" required aria-label="File backup">

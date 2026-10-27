@@ -74,6 +74,7 @@ Situs di balik Cloudflare/CAPTCHA tetap butuh crawler berbasis Chrome (crawlkomi
   - Manual delete buttons: all logs, error logs only, logs older than 2 weeks
 - **SQLite database** for config storage (zero setup)
   - **Backup & Restore** — download/upload database from admin dashboard
+  - **Per website** too — the same `.db` format with just that website; restore it over the website, or bring back a deleted one — see [Backup & restore](#backup--restore)
 
 ## Tech Stack
 - Runtime: Node.js 22.12+
@@ -152,6 +153,24 @@ Setelan headless, CAPTCHA takeover (timeout, webhook) dan fingerprint check seng
 - **Keamanan**: password minimal 8 karakter (hash scrypt), cookie sesi `HttpOnly` + `SameSite=Strict` (+ `Secure` lewat HTTPS) berlaku 24 jam. Ganti password atau **Logout All Devices** hanya mengakhiri sesi akun itu; admin yang dihapus langsung keluar. Menambah/me-reset/menghapus admin, ganti password, dan menyalakan/mematikan 2FA meminta password kamu lagi. 10 percobaan gagal dari satu IP (IPv6: satu /64) dalam 15 menit → IP itu ditolak sampai 15 menit lewat (atau restart app); di belakang nginx/Caddy set `TRUST_PROXY=1`, kalau tidak semua pengunjung terhitung satu IP.
 - File backup berisi akun admin (hash password + secret 2FA) — simpan di tempat aman.
 
+## Backup & restore
+Dua jenis backup, keduanya file SQLite `.db` dengan tabel yang sama:
+- **Lengkap** — Settings → Backup & Restore: seluruh database (semua website, settings, akun admin, log).
+  Restore mengganti semuanya.
+- **Per website** — halaman website → **Backup & Restore** (atau ikon unduh di Dashboard): hanya website
+  itu — pengaturan (termasuk proxy dan cookie), page config, dan custom page type. Akun admin, API key,
+  settings lain, log, dan cache gambar tidak ikut. Nama file `pinguincrawl-backup-<website>-<waktu>.db`.
+
+Restore per website:
+- **Di halaman website**: upload backup website itu, atau backup lengkap — website dengan nama yang sama
+  diambil darinya (backup crawlkomik juga bisa). Pengaturan, page config, dan custom page type website itu
+  diganti; website lain, cache gambar, dan log tidak berubah. Sebelumnya seluruh database disalin ke
+  `data/pinguincrawl.db.pre-restore`, sama seperti restore lengkap.
+- **Website yang sudah dihapus / dari server lain**: Add Website → *Restore dari backup*. Dari backup
+  lengkap, isi nama website yang mau diambil. Website yang namanya sudah ada di-restore dari halamannya.
+- Backup per website tidak bisa di-restore lewat Settings (akan mengganti seluruh database dengan satu
+  website itu saja) — ditolak dengan pesan jelas.
+
 ## Cara kerja browser
 - Tiap crawl menjalankan `lightpanda serve --port 0` sendiri, Puppeteer (`puppeteer-core`) terhubung lewat CDP, lalu prosesnya dihentikan begitu crawl selesai. Proxy, timezone, dan sub-resource yang dimuat adalah opsi per proses di Lightpanda, karena itu satu proses per crawl.
 - Stylesheet selalu dimuat (computed style asli). Gambar `<img>` dimuat kecuali **Block Image Loading** aktif — dan Lightpanda hanya membaca ±16 KB pertama tiap gambar, cukup untuk event `load`/`error`.
@@ -214,7 +233,7 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 - Proxy list + rotation mode per website, with per-proxy status and "Cek semua proxy"
 - View API logs (`/admin/logs`) — filter, stats, delete all/errors/old; logs >2 weeks auto-deleted
 - Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, your own password, 2FA, logout all devices
-- Backup & restore database (Settings → Backup & Restore)
+- Backup & restore database (Settings → Backup & Restore), or one website (its page → Backup & Restore)
 - Storage (`/admin/storage`) — disk & inode usage, cleanup, image cache retention / size cap
 
 ## Error `ENOSPC: no space left on device`
@@ -239,6 +258,7 @@ src/
   services/proxy-pool.js # Proxy list parsing, rotation (round-robin/random/failover), cooldown of failing proxies
   services/storage.js # Disk/inode report + cleanup jobs (Storage page)
   services/login-guard.js # Brute-force brake for login and password confirmations
+  services/backup.js  # Backup files: website backup (same .db format as the full one), website restore, pre-restore snapshot
   services/crawler.js    # Crawl logic per page type
   services/image-proxy.js # Image cache/proxy service
   services/captcha-detector.js # Detect CF/Turnstile/reCAPTCHA/hCaptcha/text challenges

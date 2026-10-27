@@ -7,6 +7,9 @@
   const endpointFor = (pt) => ({ katalog: '/api/katalog', komik_detail: '/api/komik', chapter_list: '/api/chapters', chapter: '/api/chapter' }[pt] || '/api/custom/' + pt);
   const _error = typeof error !== 'undefined' ? error : null;
   const _cptError = typeof cpt_error !== 'undefined' ? cpt_error : null;
+  const _backupError = typeof backup_error !== 'undefined' ? backup_error : null;
+  const _restoreError = typeof restore_error !== 'undefined' ? restore_error : null;
+  const _restoreName = typeof restoreName !== 'undefined' ? restoreName : '';
   let cookieInfo = null;
   try {
     const list = JSON.parse(w.cookies || '[]');
@@ -29,6 +32,11 @@
   <% if (isEdit) { %>
   <div class="page-actions">
     <a href="#page-configs" class="btn btn-outline-primary"><i class="bi bi-sliders me-1"></i>Page configs</a>
+    <a href="#backup" class="btn btn-outline-secondary"><i class="bi bi-database me-1"></i>Backup</a>
+  </div>
+  <% } else { %>
+  <div class="page-actions">
+    <a href="#restore" class="btn btn-outline-secondary"><i class="bi bi-upload me-1"></i>Restore dari backup</a>
   </div>
   <% } %>
 </div>
@@ -205,6 +213,27 @@
   </div>
 </form>
 
+<% if (!isEdit) { %>
+<section class="card mt-4 mb-2" id="restore">
+  <div class="card-header"><h2 class="section-title"><i class="bi bi-upload me-1"></i>Atau restore dari backup</h2></div>
+  <div class="card-body">
+    <% if (_restoreError) { %><div class="alert alert-danger py-2 small"><%= _restoreError %></div><% } %>
+    <p class="small text-body-secondary">Upload file backup website (<em>Download Backup</em> di halaman website) — misalnya website yang terhapus, atau dari server PinguinCrawl lain. Website dibuat lengkap dengan page config dan custom page type-nya. Backup lengkap dari Settings juga bisa: isi nama website yang mau diambil.</p>
+    <form method="POST" action="/admin/websites/restore" enctype="multipart/form-data" class="row g-2">
+      <div class="col-md-6">
+        <input type="file" class="form-control" name="dbfile" accept=".db,.sqlite,.sqlite3" required aria-label="File backup">
+      </div>
+      <div class="col-md-3">
+        <input type="text" class="form-control font-monospace" name="website" value="<%= _restoreName %>" placeholder="nama (backup lengkap)" aria-label="Nama website di backup lengkap" autocapitalize="none" spellcheck="false">
+      </div>
+      <div class="col-md-3 d-grid">
+        <button type="submit" class="btn btn-outline-primary"><i class="bi bi-upload me-1"></i>Restore Website</button>
+      </div>
+    </form>
+  </div>
+</section>
+<% } %>
+
 <% if (isEdit) { %>
 <section class="card mt-4" id="page-configs">
   <div class="card-header"><h2 class="section-title"><i class="bi bi-sliders me-1"></i>Page configs</h2></div>
@@ -273,6 +302,30 @@
   </div>
 </section>
 
+<section class="card mt-4" id="backup">
+  <div class="card-header"><h2 class="section-title"><i class="bi bi-database me-1"></i>Backup &amp; Restore</h2></div>
+  <div class="card-body">
+    <% if (_backupError) { %><div class="alert alert-danger py-2 small"><%= _backupError %></div><% } %>
+    <div class="row g-4">
+      <div class="col-lg-6">
+        <h3 class="h6">Download backup</h3>
+        <p class="small text-body-secondary">File SQLite <code>.db</code> — format sama dengan backup di Settings — berisi website ini saja: pengaturan (termasuk proxy dan cookie), page config, dan custom page type. Akun admin, API key, log, dan cache gambar tidak ikut.</p>
+        <a href="/admin/websites/<%= w.id %>/backup" class="btn btn-outline-info"><i class="bi bi-download me-1"></i>Download Backup</a>
+      </div>
+      <div class="col-lg-6">
+        <h3 class="h6">Restore</h3>
+        <p class="small text-body-secondary">Upload backup website ini, atau backup lengkap dari Settings (website bernama <code><%= w.name %></code> yang diambil). Pengaturan, page config, dan custom page type website ini diganti; website lain tidak tersentuh. Database saat ini otomatis di-backup dulu (<code>.pre-restore</code>).</p>
+        <form method="POST" action="/admin/websites/<%= w.id %>/restore" enctype="multipart/form-data" data-confirm="Restore &quot;<%= w.name %>&quot; dari backup? Pengaturan, page config, dan custom page type-nya saat ini akan diganti.">
+          <div class="input-group">
+            <input type="file" class="form-control" name="dbfile" accept=".db,.sqlite,.sqlite3" required aria-label="File backup">
+            <button type="submit" class="btn btn-outline-warning"><i class="bi bi-upload me-1"></i>Restore</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="card border-danger-subtle mt-4 mb-2">
   <div class="card-header bg-danger-subtle text-danger-emphasis"><h2 class="section-title"><i class="bi bi-exclamation-triangle me-1"></i>Danger zone</h2></div>
   <div class="card-body d-flex flex-column flex-sm-row gap-2 align-items-sm-center">
@@ -289,5 +342,10 @@
   const toggle = document.getElementById('imageProxy');
   const group = document.getElementById('cacheMethodGroup');
   if (toggle && group) toggle.addEventListener('change', () => group.classList.toggle('d-none', !toggle.checked));
+  <% if (_backupError || _restoreError) { %>
+  // The backup forms sit at the bottom of a long page — bring the error into view
+  const target = document.getElementById(<%- JSON.stringify(_backupError ? 'backup' : 'restore') %>);
+  if (target) target.scrollIntoView({ block: 'start' });
+  <% } %>
 })();
 </script>

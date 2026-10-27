@@ -3,7 +3,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
-const Database = require('better-sqlite3');
 const router = express.Router();
 const db = require('../models/database');
 const { requireAuth, createAuthCookie, clearAuthCookie, create2faPendingCookie, pending2faUser, clear2faPendingCookie } = require('../middleware/auth');
@@ -15,6 +14,7 @@ const lightpanda = require('../services/lightpanda');
 const proxyPool = require('../services/proxy-pool');
 const loginGuard = require('../services/login-guard');
 const storage = require('../services/storage');
+const backup = require('../services/backup');
 
 
 const DEFAULT_PAGE_TYPES = ['katalog', 'komik_detail', 'chapter_list', 'chapter'];
@@ -53,6 +53,7 @@ const FLASH = {
     website_created: 'Website created — now set up its page configs below',
     website_saved: 'Website saved',
     website_deleted: 'Website deleted',
+    website_restored: 'Website restored from the backup',
     type_added: 'Custom page type added',
     type_deleted: 'Custom page type deleted',
     config_saved: 'Config saved!',
@@ -411,6 +412,81 @@ router.post('/websites', express.urlencoded({ extended: true }), (req, res) => {
     res.render('pages/website-form', websiteFormLocals(req, { ...req.body, image_proxy: req.body.image_proxy === 'on' }, {
       error: message, flash: { type: 'danger', text: message },
     }));
+  }
+});
+
+// --- Website backup & restore ---
+// Same file format as the full backup (see services/backup.js). A website can also be
+// restored from a full backup: the website with its name is taken from it.
+
+function backupStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+// Website names are free text — keep a download name to safe characters
+function fileSafe(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|-+$/g, '').slice(0, 60) || 'website';
+}
+
+// Our own messages are meant for the admin as they are; anything else gets context
+const restoreMessage = (err) => (err.code ? `Restore failed: ${err.message}` : err.message);
+
+// New website from a backup (Add Website page): a website backup, or one website of a full backup.
+// Registered before /websites/:id, which would take "restore" for an id.
+router.post('/websites/restore', upload.single('dbfile'), (req, res) => {
+  const name = formText(req.body.website).trim().toLowerCase() || null;
+  const fail = (message) => res.render('pages/website-form', websiteFormLocals(req, null, {
+    restore_error: message, restoreName: name || '', flash: { type: 'danger', text: message },
+  }));
+  if (!req.file) return fail('No file uploaded');
+  try {
+    const data = backup.readWebsiteBackup(req.file.path, name);
+    if (db.getWebsiteByName(data.website.name)) {
+      return fail(`A website named "${data.website.name}" already exists — open it and restore there (Backup & Restore)`);
+    }
+    const id = backup.restoreWebsite(data);
+    res.redirect(`/admin/websites/${id}?ok=website_restored`);
+  } catch (err) {
+    fail(restoreMessage(err));
+  } finally {
+    fs.rmSync(req.file.path, { force: true });
+  }
+});
+
+function renderWebsiteBackupError(req, res, website, message) {
+  res.render('pages/website-form', websiteFormLocals(req, website, { backup_error: message, flash: { type: 'danger', text: message } }));
+}
+
+router.get('/websites/:id/backup', (req, res) => {
+  const website = db.getWebsiteById(req.params.id);
+  if (!website) return res.redirect('/admin');
+  const downloadName = `pinguincrawl-backup-${fileSafe(website.name)}-${backupStamp()}.db`;
+  // Unique on disk (two downloads in the same second); still matches the stale-file sweep
+  const file = path.join(path.dirname(db.getDbPath()), downloadName.replace(/\.db$/, `-${crypto.randomBytes(4).toString('hex')}.db`));
+  try {
+    backup.exportWebsite(website.id, file);
+    res.download(file, downloadName, () => fs.rmSync(file, { force: true }));
+  } catch (err) {
+    fs.rmSync(file, { force: true });
+    renderWebsiteBackupError(req, res, website, 'Backup failed: ' + err.message);
+  }
+});
+
+// Replaces this website's settings, page configs and custom page types with the backup's;
+// other websites, the image cache and logs stay as they are
+router.post('/websites/:id/restore', upload.single('dbfile'), (req, res) => {
+  const website = db.getWebsiteById(req.params.id);
+  try {
+    if (!website) return res.redirect('/admin');
+    if (!req.file) return renderWebsiteBackupError(req, res, website, 'No file uploaded');
+    const data = backup.readWebsiteBackup(req.file.path, website.name);
+    backup.savePreRestoreSnapshot(); // same safety copy as the full restore
+    backup.restoreWebsite(data, website.id);
+    res.redirect(`/admin/websites/${website.id}?ok=website_restored`);
+  } catch (err) {
+    renderWebsiteBackupError(req, res, website, restoreMessage(err));
+  } finally {
+    if (req.file) fs.rmSync(req.file.path, { force: true });
   }
 });
 
@@ -841,7 +917,7 @@ router.post('/clear-cache', (req, res) => {
 // --- Backup Database ---
 router.get('/backup', (req, res) => {
   const dbPath = db.getDbPath();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const timestamp = backupStamp();
   const backupFile = path.join(path.dirname(dbPath), `pinguincrawl-backup-${timestamp}.db`);
   try {
     // VACUUM INTO creates a consistent snapshot (safe even with active connections)
@@ -867,23 +943,17 @@ router.post('/restore', upload.single('dbfile'), (req, res) => {
   const tmpPath = req.file.path;
 
   try {
-    // Validate: try opening uploaded file as SQLite
-    const testDb = new Database(tmpPath, { readonly: true });
-    const tables = testDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-    const tableNames = tables.map(t => t.name);
-    testDb.close();
-
-    // Must have our core tables
-    const requiredTables = ['websites', 'page_configs', 'settings'];
-    const missing = requiredTables.filter(t => !tableNames.includes(t));
-    if (missing.length > 0) {
+    // Validate: one of our SQLite files, with the core tables
+    const info = backup.inspectBackup(tmpPath);
+    // A website backup would replace everything with that one website (and no admins)
+    if (info.scope === backup.WEBSITE_SCOPE) {
       fs.unlinkSync(tmpPath);
-      return renderError(`Invalid backup: missing required tables (${missing.join(', ')})`);
+      return renderError(`This is a backup of one website ("${info.websites[0] || '?'}") — restore it on that website's page (Backup & Restore), or under Add Website if it no longer exists`);
     }
 
     // Warn-level: check for optional tables (they'll be created by migrations if missing)
     const optionalTables = ['image_cache', 'api_logs', 'custom_page_types'];
-    const missingOptional = optionalTables.filter(t => !tableNames.includes(t));
+    const missingOptional = optionalTables.filter(t => !info.tables.includes(t));
     if (missingOptional.length > 0) {
       console.warn(`[Restore] Backup missing optional tables: ${missingOptional.join(', ')} — will be created empty`);
     }
@@ -891,14 +961,7 @@ router.post('/restore', upload.single('dbfile'), (req, res) => {
     const dbPath = db.getDbPath();
 
     // Auto-backup current db before restore (consistent snapshot)
-    const backupPath = dbPath + '.pre-restore';
-    try {
-      db.getDb().exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
-    } catch {
-      // Fallback: checkpoint + copy if VACUUM INTO fails
-      db.getDb().pragma('wal_checkpoint(TRUNCATE)');
-      fs.copyFileSync(dbPath, backupPath);
-    }
+    backup.savePreRestoreSnapshot();
 
     // Close current connection before replacing file
     db.closeDb();
@@ -921,7 +984,7 @@ router.post('/restore', upload.single('dbfile'), (req, res) => {
     }));
   } catch (err) {
     if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    renderError('Restore failed: ' + err.message);
+    renderError(restoreMessage(err));
   }
 });
 
