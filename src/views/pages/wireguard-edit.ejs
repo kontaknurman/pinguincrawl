@@ -1,0 +1,43 @@
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="/admin/settings#wireguard">Settings</a></li>
+    <li class="breadcrumb-item"><a href="/admin/settings#wireguard">WireGuard</a></li>
+    <li class="breadcrumb-item active text-break" aria-current="page"><%= cfg.name %></li>
+  </ol>
+</nav>
+
+<div class="page-header">
+  <div class="min-w-0">
+    <h1 class="text-break"><i class="bi bi-shield-shaded me-2"></i><%= cfg.name %></h1>
+    <p class="page-subtitle">
+      <% if (summary.ok) { %>Endpoint <code><%= summary.endpoint %></code> · Address <code><%= summary.address %></code><% } %>
+      · Dipakai: <%= usedBy.length ? usedBy.join(', ') : '—' %>
+    </p>
+  </div>
+</div>
+
+<% if (error) { %>
+  <div class="alert alert-danger py-2"><i class="bi bi-exclamation-octagon me-1"></i><%= error %></div>
+<% } %>
+<% (summary.warnings || []).forEach(note => { %>
+  <div class="alert alert-warning py-2 small"><i class="bi bi-exclamation-triangle me-1"></i><%= note %></div>
+<% }) %>
+
+<section class="card">
+  <div class="card-body">
+    <form method="POST" action="/admin/wireguard/<%= cfg.id %>">
+      <div class="mb-3">
+        <label class="form-label" for="wg_name">Nama</label>
+        <input type="text" class="form-control font-monospace" id="wg_name" name="name" value="<%= cfg.name %>" required autocapitalize="none" spellcheck="false" autocomplete="off">
+        <small class="form-hint">Huruf kecil, angka, titik, strip, underscore. Ganti nama ikut diganti di website yang memakainya.</small>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="wg_config">Config</label>
+        <textarea class="form-control font-monospace" id="wg_config" name="config" rows="14" required spellcheck="false" autocomplete="off"><%= cfg.config %></textarea>
+        <small class="form-hint">Berisi private key — jangan dibagikan. Setelah disimpan, tunnel yang sedang berjalan dihentikan dan dimulai lagi dengan config baru saat crawl berikutnya.</small>
+      </div>
+      <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>Save</button>
+      <a href="/admin/settings#wireguard" class="btn btn-outline-secondary">Cancel</a>
+    </form>
+  </div>
+</section>

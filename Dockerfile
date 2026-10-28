@@ -5,18 +5,32 @@ FROM node:22-bookworm-slim
 # Debian-based — on Alpine (musl) the binary cannot even start.
 # Bump LIGHTPANDA_VERSION to upgrade; /admin/settings → "Cek Lightpanda" shows the result.
 ARG LIGHTPANDA_VERSION=1.0.2
+# wireproxy: userspace WireGuard client with a local SOCKS5 server — how websites with the
+# "WireGuard" proxy type reach their VPN, without root, NET_ADMIN or a kernel module.
+# Upgrade: bump the version and copy both checksums from the release's checksums.txt.
+ARG WIREPROXY_VERSION=1.1.3
+ARG WIREPROXY_SHA256_AMD64=e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c
+ARG WIREPROXY_SHA256_ARM64=370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6
 ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl dumb-init gosu \
-    && case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-         amd64) LP_ARCH=x86_64 ;; \
-         arm64) LP_ARCH=aarch64 ;; \
-         *) echo "Lightpanda has no Linux build for ${TARGETARCH:-$(dpkg --print-architecture)}" >&2; exit 1 ;; \
+    && ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && case "$ARCH" in \
+         amd64) LP_ARCH=x86_64; WP_SHA256="$WIREPROXY_SHA256_AMD64" ;; \
+         arm64) LP_ARCH=aarch64; WP_SHA256="$WIREPROXY_SHA256_ARM64" ;; \
+         *) echo "Lightpanda has no Linux build for $ARCH" >&2; exit 1 ;; \
        esac \
     && curl -fsSL --retry 3 --retry-delay 2 -o /usr/local/bin/lightpanda \
          "https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/lightpanda-${LP_ARCH}-linux" \
     && chmod 755 /usr/local/bin/lightpanda \
     && /usr/local/bin/lightpanda version \
+    && curl -fsSL --retry 3 --retry-delay 2 -o /tmp/wireproxy.tar.gz \
+         "https://github.com/whyvl/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_${ARCH}.tar.gz" \
+    && echo "${WP_SHA256}  /tmp/wireproxy.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/wireproxy.tar.gz -C /usr/local/bin wireproxy \
+    && chown root:root /usr/local/bin/wireproxy && chmod 755 /usr/local/bin/wireproxy \
+    && rm /tmp/wireproxy.tar.gz \
+    && /usr/local/bin/wireproxy --version \
     && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 

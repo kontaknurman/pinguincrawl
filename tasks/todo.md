@@ -187,3 +187,55 @@ fitur proxy jalan dengan baik serta tambahkan fitur rotate proxy setelahnya."
   overflow.
 - Suite lain diulang: E2E **63/63**, rotasi **21/21**, migrasi **11/11**, auth **95/95**, body aneh
   **12/12**, UI **47/47**, UI auth **46/46**.
+
+---
+
+# Lanjutan: WireGuard sebagai jenis proxy kedua
+
+## Permintaan (user)
+"buat tipe proxy kedua yaitu memakai wireguard vpn config, per website bisa memilih config yang mau
+dipakai dari sumber yang di input di setting. pastikan ringan dan berfungsi"
+
+## Temuan (diuji dengan WireGuard sungguhan di sandbox)
+- Lightpanda hanya bisa HTTP/SOCKS proxy; WireGuard kernel butuh root/NET_ADMIN dan membelokkan seluruh
+  container → pakai **wireproxy** 1.1.3 (WireGuard userspace + SOCKS5), ±12 MB per proses, tanpa hak khusus.
+- `/metrics` wireproxy memberi `last_handshake_time_sec` → tunnel mati (kunci salah / endpoint mati)
+  terdeteksi dari handshake, bukan dari koneksi yang menggantung 40 detik.
+- Tanpa traffic WireGuard tidak handshake → `PersistentKeepalive` dipasang (default 25 s) agar handshake
+  langsung terjadi; handshake terbarui sendiri saat idle (diuji 200 s idle: request pertama 28 ms).
+- Tanpa `DNS` di config, wireproxy gagal resolve nama (tidak jatuh ke resolver sistem) → default DNS
+  publik lewat tunnel.
+- Dua client dengan private key sama membuat server bolak-balik → koneksi tersendat 1–20 s. Maka satu
+  proses per config, dipakai bersama.
+- **`-c /dev/stdin` gagal kalau dijalankan dari Node** (stdio Node = socketpair, `open()` → ENXIO); di
+  shell lolos karena `cat |` memakai pipe sungguhan → config lewat file 0600 di `/dev/shm` (RAM) yang
+  dihapus begitu wireproxy membacanya.
+
+## Plan
+- [x] 1. Tabel `wireguard_configs`; kolom website `proxy_type` + `wireguard` (nama config, satu per baris)
+- [x] 2. `services/wireguard.js`: parser wg-quick (PostUp dkk. dibuang), wireproxy on-demand per config,
+       tunggu handshake 10 s, restart kalau handshake basi > 4 menit, idle stop, sweep yatim
+- [x] 3. Rotasi/failover proxy yang ada dipakai apa adanya (entri `wireguard:<nama>`), `getBrowser` →
+       SOCKS5 lokal; Cek Lightpanda, status per entri, badge dashboard
+- [x] 4. Settings → WireGuard (upload banyak `.conf`, tempel, Test, Edit/ganti nama, hapus diblokir
+       kalau dipakai); form website: Jenis proxy + centang config
+- [x] 5. Dockerfile (versi dikunci + sha256), README, env `WIREPROXY_EXECUTABLE_PATH`,
+       `WIREGUARD_IDLE_SECONDS`
+- [x] 6. Verifikasi
+
+## Review
+- E2E WireGuard **51/51** (app asli + Lightpanda asli + dua "server VPN" wireproxy lokal dengan situs
+  yang hanya ada di dalam tunnel `203.0.113.1`): upload 3 `.conf` sekaligus + tempel, kunci rusak /
+  nama ganda ditolak per file, upload tidak menyentuh disk; crawl lewat tunnel (backend mencatat hit),
+  1 proses ±12 MB, argumen tanpa kunci, file config di `/dev/shm` langsung hilang, PostUp tidak jalan;
+  dipakai ulang (pid sama), 4 crawl paralel; Bergiliran A,B,A,B; Cadangan: config mati gagal handshake
+  dalam 10 s → config berikutnya di request yang sama, lalu diistirahatkan; kunci salah → error jelas;
+  config yang tidak ada (restore backup) dilewati; tombol Test; Cek Lightpanda per config; ganti nama
+  ikut ke website, edit menghentikan tunnel lama; hapus saat dipakai ditolak; idle stop lalu hidup lagi;
+  backup per website tanpa private key; SIGTERM tanpa sisa, SIGKILL → yatim → disapu saat start;
+  wireproxy tidak ada → error/peringatan jelas.
+- UI (Playwright, 1440px + 390px) **42/42**; Docker **7/7** (image dengan wireproxy terverifikasi
+  checksum, crawl lewat tunnel dari container, wireproxy sebagai user non-root ±12 MB, tanpa capability
+  tambahan, `/dev/shm` bersih).
+- Suite lain diulang: E2E **63/63**, rotasi **21/21**, migrasi **11/11**, backup per website **46/46**,
+  auth **95/95**, body aneh **12/12**, UI **47/47**, UI auth **46/46**, UI backup **36/36**.

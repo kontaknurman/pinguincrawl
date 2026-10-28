@@ -143,6 +143,26 @@ function initTables() {
     db.exec("ALTER TABLE websites ADD COLUMN proxy_rotation TEXT DEFAULT 'round_robin'");
   }
 
+  // Migration: second kind of proxy. proxy_type 'wireguard' crawls through the WireGuard
+  // configs named in `wireguard` (one per line, from Settings → WireGuard) instead of the
+  // proxy list; both are kept, so switching back and forth loses nothing.
+  const wCols5 = db.prepare("PRAGMA table_info(websites)").all();
+  if (!wCols5.find(c => c.name === 'proxy_type')) {
+    db.exec("ALTER TABLE websites ADD COLUMN proxy_type TEXT DEFAULT 'proxy'");
+  }
+  if (!wCols5.find(c => c.name === 'wireguard')) {
+    db.exec("ALTER TABLE websites ADD COLUMN wireguard TEXT DEFAULT NULL");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wireguard_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      config TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   // Migration: add use_js column to page_configs (1=browser render, 0=simple HTTP)
   const pcCols4 = db.prepare("PRAGMA table_info(page_configs)").all();
   if (!pcCols4.find(c => c.name === 'use_js')) {
@@ -296,18 +316,18 @@ function getWebsiteByName(name) {
   return getDb().prepare('SELECT * FROM websites WHERE name = ?').get(name);
 }
 
-function createWebsite({ name, base_url, proxy, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
+function createWebsite({ name, base_url, proxy, proxy_type, wireguard, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
   const stmt = getDb().prepare(
-    `INSERT INTO websites (name, base_url, proxy, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO websites (name, base_url, proxy, proxy_type, wireguard, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  return stmt.run(name, base_url, proxy || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null);
+  return stmt.run(name, base_url, proxy || null, proxy_type === 'wireguard' ? 'wireguard' : 'proxy', wireguard || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null);
 }
 
-function updateWebsite(id, { name, base_url, active, proxy, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
+function updateWebsite(id, { name, base_url, active, proxy, proxy_type, wireguard, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
   const stmt = getDb().prepare(
-    `UPDATE websites SET name=?, base_url=?, active=?, proxy=?, proxy_rotation=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE websites SET name=?, base_url=?, active=?, proxy=?, proxy_type=?, wireguard=?, proxy_rotation=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
   );
-  return stmt.run(name, base_url, active ? 1 : 0, proxy || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
+  return stmt.run(name, base_url, active ? 1 : 0, proxy || null, proxy_type === 'wireguard' ? 'wireguard' : 'proxy', wireguard || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
 }
 
 function updateWebsiteCookies(id, cookies) {
@@ -592,6 +612,58 @@ function deleteUser(id) {
   return getDb().prepare('DELETE FROM users WHERE id = ?').run(id);
 }
 
+// --- WireGuard configs (Settings → WireGuard) ---
+// Websites refer to them by name (websites.wireguard, one per line), so a website backup
+// restored on another server finds configs with the same names there.
+
+const wgNames = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+
+function getWireguardConfigs() {
+  return getDb().prepare('SELECT * FROM wireguard_configs ORDER BY name').all();
+}
+
+function getWireguardConfigById(id) {
+  return getDb().prepare('SELECT * FROM wireguard_configs WHERE id = ?').get(id);
+}
+
+function getWireguardConfigByName(name) {
+  return getDb().prepare('SELECT * FROM wireguard_configs WHERE name = ?').get(name);
+}
+
+function createWireguardConfig({ name, config }) {
+  return getDb().prepare('INSERT INTO wireguard_configs (name, config) VALUES (?, ?)').run(name, config);
+}
+
+/** New name and/or text. A new name is carried into the websites that use the config. */
+function updateWireguardConfig(id, { name, config }) {
+  const d = getDb();
+  return d.transaction(() => {
+    const old = getWireguardConfigById(id);
+    d.prepare("UPDATE wireguard_configs SET name = ?, config = ?, updated_at = datetime('now') WHERE id = ?").run(name, config, id);
+    if (old && old.name !== name) {
+      for (const w of d.prepare('SELECT id, wireguard FROM websites WHERE wireguard IS NOT NULL').all()) {
+        const names = wgNames(w.wireguard);
+        if (names.includes(old.name)) {
+          d.prepare('UPDATE websites SET wireguard = ? WHERE id = ?').run(names.map((n) => (n === old.name ? name : n)).join('\n'), w.id);
+        }
+      }
+    }
+  })();
+}
+
+function deleteWireguardConfig(id) {
+  return getDb().prepare('DELETE FROM wireguard_configs WHERE id = ?').run(id);
+}
+
+/** { config name: [website names that selected it] } — whatever their current proxy type. */
+function getWireguardUsage() {
+  const usage = {};
+  for (const w of getDb().prepare('SELECT name, wireguard FROM websites WHERE wireguard IS NOT NULL ORDER BY name').all()) {
+    for (const n of wgNames(w.wireguard)) (usage[n] = usage[n] || []).push(w.name);
+  }
+  return usage;
+}
+
 function closeDb() {
   if (db) {
     db.close();
@@ -654,6 +726,13 @@ module.exports = {
   bumpSessionVersion,
   touchUserLogin,
   deleteUser,
+  getWireguardConfigs,
+  getWireguardConfigById,
+  getWireguardConfigByName,
+  createWireguardConfig,
+  updateWireguardConfig,
+  deleteWireguardConfig,
+  getWireguardUsage,
   getCustomPageTypes,
   getCustomPageTypeByName,
   createCustomPageType,

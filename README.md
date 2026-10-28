@@ -26,6 +26,7 @@ Situs di balik Cloudflare/CAPTCHA tetap butuh crawler berbasis Chrome (crawlkomi
 - **Cek Lightpanda** (Settings) — starts the browser and reports version, JS, cookies, the User-Agent it really sends and its timezone; per website it also opens the base URL through that website's proxy and says whether a challenge page came back
 - **Custom headers & cookies** per website (optional) — session cookies auto-saved when a challenge page clears by itself
 - **Proxy & rotate proxy** per website — HTTP/HTTPS/SOCKS5 with login, `host:port:user:pass` lists; several proxies rotate (round-robin / random / failover), a failing proxy is swapped for the next one within the same request and rested for 5 minutes — see [Proxy & rotasi proxy](#proxy--rotasi-proxy)
+- **WireGuard (VPN)** as a second proxy type — configs (`.conf`) are added once in Settings, each website ticks the ones it crawls through (rotated like proxies). Userspace via [wireproxy](https://github.com/whyvl/wireproxy): no root, no NET_ADMIN, ~12 MB per tunnel, started on demand — see [WireGuard (VPN)](#wireguard-vpn)
 - **Timezone per website** — the browser clock (`Date`/`Intl`); the container runs in UTC
 - **Image proxy/cache** - caches images through server for blob URLs or referrer-restricted sources
   - Toggle per website in admin panel
@@ -128,6 +129,8 @@ npm run dev      # with auto-reload
 | `MAX_BROWSERS` | `3` | concurrent browsers when not set in Settings |
 | `LIGHTPANDA_DISABLE_TELEMETRY` | set in Docker | Lightpanda sends usage telemetry unless this is set (to any value). The Docker image sets it; remove the `ENV` line to allow telemetry |
 | `LIGHTPANDA_DISABLE_CORE_DUMP` | set in Docker | no core dumps when the browser crashes |
+| `WIREPROXY_EXECUTABLE_PATH` | `wireproxy` on `PATH` | wireproxy binary for WireGuard configs (in the Docker image) |
+| `WIREGUARD_IDLE_SECONDS` | `300` | an unused WireGuard tunnel stops after this long; the next crawl starts it again (one handshake) |
 | `TRUST_PROXY` | – | `1` when behind nginx/Caddy — the login brake then counts each visitor's IP instead of the proxy's. Never without such a proxy (clients could fake their IP) |
 
 ## Pindah dari crawlkomik
@@ -191,6 +194,26 @@ socks5://user:pass@5.6.7.8:1080
 - **Yang lewat proxy**: halaman, semua request JavaScript-nya, dan cache gambar metode **Browser**. **Tidak** lewat proxy: metode **Node.js HTTP**, **Lazy Proxy**, dan mode HTTP biasa (JS off). Page config bisa mematikan proxy per page type (**Force OFF**).
 - Kredensial proxy diteruskan ke Lightpanda di argumen `--http-proxy` — satu-satunya cara yang jalan untuk situs HTTPS (tunnel CONNECT) dan SOCKS. Artinya user lain di mesin yang sama bisa melihatnya lewat `ps`; di dalam container Docker hal ini tidak berlaku.
 
+## WireGuard (VPN)
+Jenis proxy kedua: crawl lewat VPN WireGuard (Mullvad, ProtonVPN, Surfshark, WARP, server sendiri, …).
+1. **Settings → WireGuard**: upload file `.conf` dari penyedia VPN (boleh banyak sekaligus — nama config = nama file) atau tempel isinya dan beri nama. Config dicek saat disimpan (kunci, Address, Endpoint, AllowedIPs; juga oleh `wireproxy -n`).
+2. **Form website → Jenis proxy → WireGuard (VPN)**, centang config yang dipakai. Lebih dari satu dirotasi sama seperti proxy (Bergiliran / Acak / Cadangan); mode Cadangan memakai urutan nama — awali nama dengan angka (`1-sg`, `2-jp`) untuk mengatur prioritas. Daftar proxy tetap tersimpan, jadi bisa ganti jenis kapan saja.
+3. **Test** di daftar config (Settings) menyalakan tunnel dan menunggu handshake; **Cek semua proxy** di halaman website membuka base URL lewat tiap config.
+
+Cara kerjanya — ringan dan tanpa hak khusus:
+- Tiap config dijalankan sebagai satu proses [wireproxy](https://github.com/whyvl/wireproxy) (WireGuard userspace + SOCKS5 di `127.0.0.1`, ±12 MB RAM), **hanya saat dipakai**: dinyalakan oleh crawl pertama, dipakai bersama semua crawl dan website yang memilih config itu, dan **berhenti sendiri setelah 5 menit** tidak dipakai (`WIREGUARD_IDLE_SECONDS`). Tidak butuh root, `NET_ADMIN`, modul kernel, atau `--cap-add` di Docker, dan lalu lintas container lain tidak terpengaruh.
+- Lightpanda memakai tunnel itu sebagai proxy SOCKS5 — halaman, semua request-nya, dan **DNS** lewat VPN (DNS dari config; tanpa `DNS`, 1.1.1.1/9.9.9.9 lewat tunnel).
+- Tunnel dianggap siap setelah **handshake WireGuard berhasil** — kunci salah atau server mati gagal dalam 10 detik dengan pesan jelas, lalu config berikutnya dicoba dan yang gagal diistirahatkan 5 menit (sama seperti proxy). Tunnel yang sudah jalan tapi tidak handshake lagi > 4 menit dinyalakan ulang.
+- Private key tidak pernah ditulis ke disk: config diberikan ke wireproxy lewat file `0600` di `/dev/shm` (RAM) yang langsung dihapus setelah dibaca. `PostUp`/`PreDown` dan opsi wg-quick lain diabaikan — tidak ada perintah yang dijalankan.
+- Proses yang tertinggal karena Node di-kill paksa dibunuh saat server start dan tiap 30 menit.
+
+Catatan:
+- Sama seperti proxy, yang lewat VPN hanya Lightpanda (dan cache gambar metode **Browser**); mode HTTP biasa (JS off), metode **Node.js HTTP**, dan **Lazy Proxy** tidak.
+- Jangan pakai config yang sama di perangkat lain **pada waktu yang sama** — satu private key = satu peer; server VPN akan bolak-balik di antara keduanya dan koneksi tersendat.
+- Server harus boleh mengirim UDP ke `Endpoint` (firewall/hosting yang memblokir UDP keluar → handshake gagal).
+- Backup lengkap ikut menyimpan config (termasuk private key). Backup per website hanya menyimpan nama config yang dipilih; di server tujuan config dengan nama sama harus ada.
+- Instalasi manual: unduh `wireproxy_linux_amd64.tar.gz` (atau `arm64`) dari [rilis wireproxy](https://github.com/whyvl/wireproxy/releases), ekstrak `wireproxy` ke `PATH` — atau set `WIREPROXY_EXECUTABLE_PATH`. Image Docker sudah memasangnya (versi dikunci + checksum).
+
 ## Cloudflare, CAPTCHA & WAF
 Lightpanda tidak punya mesin grafis dan selalu mengaku sebagai Lightpanda, jadi challenge Cloudflare/Turnstile/reCAPTCHA/hCaptcha **tidak bisa dilewati** — tidak ada mode headful, stealth, atau ambil-alih manual seperti di crawlkomik.
 
@@ -230,9 +253,9 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 - Regex replace rules per page type (post-scrape text transformation)
 - Custom response fields — add extra fields to API response (string, array, object_array with sub-fields)
 - Custom headers & cookies per website (JSON fields in website form)
-- Proxy list + rotation mode per website, with per-proxy status and "Cek semua proxy"
+- Proxy list or WireGuard configs + rotation mode per website, with per-proxy status and "Cek semua proxy"
 - View API logs (`/admin/logs`) — filter, stats, delete all/errors/old; logs >2 weeks auto-deleted
-- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, your own password, 2FA, logout all devices
+- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, WireGuard configs, your own password, 2FA, logout all devices
 - Backup & restore database (Settings → Backup & Restore), or one website (its page → Backup & Restore)
 - Storage (`/admin/storage`) — disk & inode usage, cleanup, image cache retention / size cap
 
@@ -259,6 +282,7 @@ src/
   services/storage.js # Disk/inode report + cleanup jobs (Storage page)
   services/login-guard.js # Brute-force brake for login and password confirmations
   services/backup.js  # Backup files: website backup (same .db format as the full one), website restore, pre-restore snapshot
+  services/wireguard.js # WireGuard configs: parse/validate, one on-demand wireproxy (SOCKS5) per config, handshake check, idle stop
   services/crawler.js    # Crawl logic per page type
   services/image-proxy.js # Image cache/proxy service
   services/captcha-detector.js # Detect CF/Turnstile/reCAPTCHA/hCaptcha/text challenges

@@ -15,6 +15,7 @@ const proxyPool = require('../services/proxy-pool');
 const loginGuard = require('../services/login-guard');
 const storage = require('../services/storage');
 const backup = require('../services/backup');
+const wireguard = require('../services/wireguard');
 
 
 const DEFAULT_PAGE_TYPES = ['katalog', 'komik_detail', 'chapter_list', 'chapter'];
@@ -54,6 +55,9 @@ const FLASH = {
     website_saved: 'Website saved',
     website_deleted: 'Website deleted',
     website_restored: 'Website restored from the backup',
+    wg_added: '{n} WireGuard config(s) added',
+    wg_saved: 'WireGuard config saved — its tunnel restarts with it at the next crawl',
+    wg_deleted: 'WireGuard config deleted',
     type_added: 'Custom page type added',
     type_deleted: 'Custom page type deleted',
     config_saved: 'Config saved!',
@@ -213,7 +217,7 @@ router.get('/', (req, res) => {
     page: 'dashboard',
     websites,
     // Proxy labels without credentials (host:port:user:pass would slip past a URL regex)
-    proxyLabels: Object.fromEntries(websites.map((w) => [w.id, proxyPool.parseProxyList(w.proxy).map(proxyPool.displayOf)])),
+    proxyLabels: Object.fromEntries(websites.map((w) => [w.id, proxyPool.websiteProxies(w).map(proxyPool.displayOf)])),
     configCounts: db.getPageConfigCountsByWebsite(),
     browserStatus: getActiveBrowserCount(),
     logStats: db.getApiLogStats(),
@@ -240,6 +244,9 @@ function settingsLocals(req, extra = {}) {
     totpEnabled: !!req.user.totp_enabled,
     minPassword: db.MIN_PASSWORD_LENGTH,
     clientIp: (req.ip || '').replace(/^::ffff:/, ''),
+    wg: wireguardLocals(),
+    wgError: null,
+    wgForm: {},
     pwError: null,
     totpError: null,
     backupError: null,
@@ -258,6 +265,122 @@ function renderSettingsError(req, res, section, field, message) {
 
 router.get('/settings', (req, res) => {
   res.render('pages/settings', settingsLocals(req));
+});
+
+// --- WireGuard configs (Settings → WireGuard) ---
+// Uploaded .conf files hold private keys: kept in memory, never written to the upload dir
+const wgUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024, files: 100 } });
+
+function wireguardLocals() {
+  const usage = db.getWireguardUsage();
+  const runtime = wireguard.runtimeStatus();
+  return {
+    executable: wireguard.executablePath(),
+    version: wireguard.cachedVersion(),
+    idleMinutes: Math.round(wireguard.IDLE_MS / 60000),
+    configs: db.getWireguardConfigs().map((c) => ({
+      id: c.id, name: c.name, ...wireguard.summarize(c.config), usedBy: usage[c.name] || [], runtime: runtime[c.name] || null,
+    })),
+  };
+}
+
+function renderWireguard(req, res, { error = null, ok = null, form = {} } = {}) {
+  res.render('pages/settings', settingsLocals(req, {
+    focusSection: 'wireguard', wgError: error, wgForm: form,
+    flash: error ? { type: 'danger', text: error } : ok ? { type: 'success', text: ok } : null,
+  }));
+}
+
+// Pasted config and/or .conf files; each file becomes a config named after the file
+router.post('/wireguard', (req, res, next) => {
+  wgUpload.array('files', 100)(req, res, (err) => (err ? renderWireguard(req, res, { error: `Upload failed: ${err.message}` }) : next()));
+}, async (req, res) => {
+  const name = formText(req.body.name).trim();
+  const text = formText(req.body.config).trim();
+  const items = [];
+  if (text) items.push({ label: name || 'pasted config', name: wireguard.nameFrom(name), config: text, pasted: true });
+  for (const f of req.files || []) items.push({ label: f.originalname, name: wireguard.nameFrom(f.originalname), config: f.buffer.toString('utf8').trim() });
+  if (!items.length) return renderWireguard(req, res, { error: 'Paste a WireGuard config or choose .conf files' });
+
+  const added = [];
+  const problems = [];
+  for (const item of items) {
+    try {
+      if (!item.name) throw new Error(item.pasted ? 'give the pasted config a name' : 'no usable name in the file name');
+      if (db.getWireguardConfigByName(item.name)) throw new Error(`a config named "${item.name}" already exists`);
+      wireguard.parseConfig(item.config);
+      await wireguard.checkWithWireproxy(item.config);
+      db.createWireguardConfig({ name: item.name, config: item.config + '\n' });
+      added.push(item.name);
+    } catch (err) {
+      problems.push(`${item.label}: ${err.message}`);
+    }
+  }
+  if (problems.length) {
+    return renderWireguard(req, res, {
+      error: `${added.length ? `Added ${added.join(', ')}. ` : ''}Not added — ${problems.join(' · ')}`,
+      form: added.length ? {} : { name, config: text },
+    });
+  }
+  res.redirect(`/admin/settings?ok=wg_added&n=${added.length}#wireguard`);
+});
+
+function wireguardEditLocals(cfg, extra = {}) {
+  return {
+    page: 'settings', cfg, summary: wireguard.summarize(cfg.config), usedBy: db.getWireguardUsage()[cfg.name] || [], error: null, ...extra,
+  };
+}
+
+router.get('/wireguard/:id', (req, res) => {
+  const cfg = db.getWireguardConfigById(req.params.id);
+  if (!cfg) return res.redirect('/admin/settings#wireguard');
+  res.render('pages/wireguard-edit', wireguardEditLocals(cfg));
+});
+
+router.post('/wireguard/:id', express.urlencoded({ extended: true }), async (req, res) => {
+  const cfg = db.getWireguardConfigById(req.params.id);
+  if (!cfg) return res.redirect('/admin/settings#wireguard');
+  const name = wireguard.nameFrom(formText(req.body.name));
+  const config = formText(req.body.config).trim();
+  const fail = (message) => res.render('pages/wireguard-edit', wireguardEditLocals({ ...cfg, name: formText(req.body.name), config }, {
+    error: message, flash: { type: 'danger', text: message },
+  }));
+  try {
+    if (!name) return fail('Name is required — letters, numbers, dot, dash or underscore');
+    const other = db.getWireguardConfigByName(name);
+    if (other && other.id !== cfg.id) return fail(`A config named "${name}" already exists`);
+    wireguard.parseConfig(config);
+    await wireguard.checkWithWireproxy(config);
+  } catch (err) {
+    return fail(err.message);
+  }
+  db.updateWireguardConfig(cfg.id, { name, config: config + '\n' });
+  await wireguard.stop(cfg.name); // the running tunnel still has the old config
+  res.redirect('/admin/settings?ok=wg_saved#wireguard');
+});
+
+// Bring the tunnel up (handshake) — the same thing a crawl does first
+router.post('/wireguard/:id/test', async (req, res) => {
+  const cfg = db.getWireguardConfigById(req.params.id);
+  if (!cfg) return res.redirect('/admin/settings#wireguard');
+  try {
+    const r = await wireguard.test(cfg.name);
+    renderWireguard(req, res, { ok: `WireGuard "${cfg.name}": tunnel up, handshake OK (${(r.ms / 1000).toFixed(1)} s)` });
+  } catch (err) {
+    renderWireguard(req, res, { error: err.message });
+  }
+});
+
+router.post('/wireguard/:id/delete', async (req, res) => {
+  const cfg = db.getWireguardConfigById(req.params.id);
+  if (!cfg) return res.redirect('/admin/settings#wireguard');
+  const usedBy = db.getWireguardUsage()[cfg.name] || [];
+  if (usedBy.length) {
+    return renderWireguard(req, res, { error: `"${cfg.name}" is ticked on website(s) ${usedBy.join(', ')} — untick it there first` });
+  }
+  db.deleteWireguardConfig(cfg.id);
+  await wireguard.stop(cfg.name);
+  res.redirect('/admin/settings?ok=wg_deleted#wireguard');
 });
 
 // --- Change own password ---
@@ -360,6 +483,17 @@ function timezoneField(value) {
   return tz;
 }
 
+// The ticked WireGuard configs (checkboxes: none, one value or several), in Settings order.
+// Kept while the proxy list is in use too, so switching the type back loses nothing.
+function wireguardField(body) {
+  const picked = new Set([].concat(body.wireguard || []).filter((v) => typeof v === 'string'));
+  const names = db.getWireguardConfigs().map((c) => c.name).filter((n) => picked.has(n));
+  if (body.proxy_type === 'wireguard' && !names.length) {
+    throw new Error('Proxy type WireGuard: tick at least one WireGuard config (add them under Settings → WireGuard)');
+  }
+  return names.join('\n') || null;
+}
+
 function websiteFromBody(body) {
   const name = (body.name || '').trim().toLowerCase();
   const baseUrl = (body.base_url || '').trim();
@@ -371,6 +505,8 @@ function websiteFromBody(body) {
     active: body.active === 'on',
     // One proxy per line; a typo is a form error, not a crawl that silently goes direct
     proxy: proxyPool.normalizeProxyList(body.proxy) || null,
+    proxy_type: body.proxy_type === 'wireguard' ? 'wireguard' : 'proxy',
+    wireguard: wireguardField(body),
     proxy_rotation: proxyPool.ROTATIONS.includes(body.proxy_rotation) ? body.proxy_rotation : 'round_robin',
     user_agent: body.user_agent,
     image_proxy: body.image_proxy === 'on',
@@ -389,7 +525,9 @@ function websiteFormLocals(req, website, extra = {}) {
     pageConfigs: isEdit ? db.getPageConfigs(website.id) : [],
     pageTypes: getPageTypesForWebsite(isEdit ? website.id : null),
     customPageTypes: isEdit ? db.getCustomPageTypes(website.id) : [],
-    proxyStatus: proxyPool.status(proxyPool.parseProxyList(website && website.proxy)),
+    proxyStatus: proxyPool.status(proxyPool.websiteProxies(website)),
+    wireguardConfigs: db.getWireguardConfigs().map((c) => ({ name: c.name, ...wireguard.summarize(c.config) })),
+    wireproxyInstalled: !!wireguard.executablePath(),
     page: isEdit ? 'website-edit' : 'websites',
     apiBase: apiBaseUrl(req),
     apiKeySet: !!db.getSetting('api_key'),
@@ -409,7 +547,7 @@ router.post('/websites', express.urlencoded({ extended: true }), (req, res) => {
     res.redirect(`/admin/websites/${info.lastInsertRowid}?ok=website_created`);
   } catch (err) {
     const message = err.message.includes('UNIQUE') ? `A website named "${(req.body.name || '').trim().toLowerCase()}" already exists` : err.message;
-    res.render('pages/website-form', websiteFormLocals(req, { ...req.body, image_proxy: req.body.image_proxy === 'on' }, {
+    res.render('pages/website-form', websiteFormLocals(req, { ...req.body, image_proxy: req.body.image_proxy === 'on', wireguard: [].concat(req.body.wireguard || []).join('\n') }, {
       error: message, flash: { type: 'danger', text: message },
     }));
   }
@@ -507,7 +645,7 @@ router.post('/websites/:id', express.urlencoded({ extended: true }), (req, res) 
   } catch (err) {
     const message = err.message.includes('UNIQUE') ? `A website named "${(req.body.name || '').trim().toLowerCase()}" already exists` : err.message;
     // Keep what the admin typed — checkboxes are absent from the body when unchecked
-    const edited = { ...website, ...req.body, image_proxy: req.body.image_proxy === 'on', active: req.body.active === 'on' };
+    const edited = { ...website, ...req.body, image_proxy: req.body.image_proxy === 'on', active: req.body.active === 'on', wireguard: [].concat(req.body.wireguard || []).join('\n') };
     res.render('pages/website-form', websiteFormLocals(req, edited, {
       error: message, flash: { type: 'danger', text: message },
     }));

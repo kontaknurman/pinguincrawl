@@ -91,6 +91,19 @@ lightpanda.getVersion().then((version) => {
   else console.warn(`[Lightpanda] ${bin ? `${bin} cannot be run` : 'not installed'} — crawls with JS rendering on will fail until it works (see README)`);
 });
 
+// WireGuard tunnels (wireproxy) are started on demand by crawls; only leftovers of a
+// hard-killed earlier run need sweeping here
+const wireguard = require('./services/wireguard');
+wireguard.sweepOrphans();
+setInterval(wireguard.sweepOrphans, 30 * 60 * 1000);
+wireguard.getVersion().then((version) => {
+  if (version) {
+    console.log(`[WireGuard] wireproxy ${version} (${wireguard.executablePath()})`);
+  } else if (require('./models/database').getWireguardConfigs().length) {
+    console.warn('[WireGuard] wireproxy is not installed — websites using WireGuard configs will fail to crawl (see README)');
+  }
+});
+
 // API log cleanup — delete logs older than 2 weeks, runs every 12 hours
 const { deleteOldApiLogs, LOG_RETENTION_DAYS } = require('./models/database');
 function cleanOldApiLogs() {

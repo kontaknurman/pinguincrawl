@@ -8,6 +8,7 @@
 <nav class="scroll-x mb-4" aria-label="Bagian settings">
   <a class="btn btn-sm btn-outline-secondary" href="#crawl"><i class="bi bi-window-stack me-1"></i>Crawl &amp; Browser</a>
   <a class="btn btn-sm btn-outline-secondary" href="#api"><i class="bi bi-key me-1"></i>Akses API</a>
+  <a class="btn btn-sm btn-outline-secondary" href="#wireguard"><i class="bi bi-shield-shaded me-1"></i>WireGuard</a>
   <a class="btn btn-sm btn-outline-secondary" href="#security"><i class="bi bi-shield-lock me-1"></i>Keamanan</a>
   <a class="btn btn-sm btn-outline-secondary" href="#backup"><i class="bi bi-database me-1"></i>Backup &amp; Restore</a>
 </nav>
@@ -95,6 +96,76 @@
     </section>
   </div>
 
+  <!-- WireGuard configs: the second kind of website proxy -->
+  <div class="col-12">
+    <section class="card" id="wireguard">
+      <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+        <h2 class="section-title me-auto"><i class="bi bi-shield-shaded me-1"></i>WireGuard (VPN)</h2>
+        <% if (wg.executable) { %><span class="badge text-bg-success" title="<%= wg.executable %>">wireproxy<%= wg.version ? ' ' + wg.version : '' %></span><% } %>
+      </div>
+      <div class="card-body">
+        <% if (!wg.executable) { %>
+          <div class="alert alert-warning py-2 small"><i class="bi bi-exclamation-triangle me-1"></i><code>wireproxy</code> tidak ditemukan — config tetap bisa disimpan, tapi website yang memakai WireGuard gagal crawl sampai wireproxy terpasang (lihat README) atau <code>WIREPROXY_EXECUTABLE_PATH</code> diset.</div>
+        <% } %>
+        <% if (wgError) { %><div class="alert alert-danger py-2 small"><%= wgError %></div><% } %>
+        <p class="small text-body-secondary">Config WireGuard dari penyedia VPN (file <code>.conf</code>). Di form website, pilih jenis proxy <em>WireGuard</em> lalu centang config yang dipakai — lebih dari satu dirotasi seperti proxy. Tiap config jalan sebagai satu proses kecil (±12 MB) hanya saat dipakai, dipakai bersama semua website, dan berhenti sendiri setelah <%= wg.idleMinutes %> menit tidak dipakai. Tidak butuh root atau NET_ADMIN.</p>
+
+        <% if (wg.configs.length) { %>
+        <div class="list-group mb-4" id="wgList">
+          <% wg.configs.forEach(c => { %>
+          <div class="list-group-item py-3" data-wg="<%= c.name %>">
+            <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 align-items-md-center">
+              <div class="min-w-0 flex-grow-1">
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                  <span class="fw-semibold font-monospace text-break"><%= c.name %></span>
+                  <% if (!c.ok) { %><span class="badge text-bg-danger">config rusak</span>
+                  <% } else if (c.runtime) { %><span class="badge text-bg-success">berjalan<%= c.runtime.active ? ' · ' + c.runtime.active + ' crawl' : '' %></span>
+                  <% } else { %><span class="badge bg-secondary-subtle text-secondary-emphasis">tidak berjalan</span><% } %>
+                </div>
+                <% if (c.ok) { %>
+                  <div class="small text-body-secondary mt-1 text-break">Endpoint <code><%= c.endpoint %></code> · Address <code><%= c.address %></code> · DNS <%= c.dns ? c.dns : 'bawaan' %><% if (c.peers > 1) { %> · <%= c.peers %> peer<% } %></div>
+                <% } else { %>
+                  <div class="small text-danger mt-1"><%= c.error %></div>
+                <% } %>
+                <div class="small text-body-secondary">
+                  Dipakai: <%= c.usedBy.length ? c.usedBy.join(', ') : '—' %>
+                  <% if (c.runtime && c.runtime.handshakeAt) { %>· handshake terakhir <time data-utc="<%= c.runtime.handshakeAt * 1000 %>" data-relative></time><% } %>
+                </div>
+                <% c.warnings.forEach(note => { %><div class="small text-warning-emphasis"><i class="bi bi-exclamation-triangle me-1"></i><%= note %></div><% }) %>
+              </div>
+              <div class="d-flex gap-2 flex-shrink-0">
+                <form method="POST" action="/admin/wireguard/<%= c.id %>/test"><button type="submit" class="btn btn-sm btn-outline-info"><i class="bi bi-activity me-1"></i>Test</button></form>
+                <a href="/admin/wireguard/<%= c.id %>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
+                <form method="POST" action="/admin/wireguard/<%= c.id %>/delete" data-confirm="Hapus config WireGuard &quot;<%= c.name %>&quot;?"><button type="submit" class="btn btn-sm btn-outline-danger" title="Hapus" aria-label="Hapus <%= c.name %>"><i class="bi bi-trash"></i></button></form>
+              </div>
+            </div>
+          </div>
+          <% }) %>
+        </div>
+        <% } %>
+
+        <h3 class="h6">Tambah config</h3>
+        <form method="POST" action="/admin/wireguard" enctype="multipart/form-data" id="wgAdd">
+          <div class="row g-3">
+            <div class="col-lg-6">
+              <label class="form-label small" for="wg_files">Upload file <code>.conf</code> <span class="text-body-secondary">(boleh banyak sekaligus — nama config = nama file)</span></label>
+              <input type="file" class="form-control" id="wg_files" name="files" accept=".conf,text/plain" multiple>
+            </div>
+            <div class="col-lg-6">
+              <label class="form-label small" for="wg_name">Atau tempel config — beri nama</label>
+              <input type="text" class="form-control font-monospace" id="wg_name" name="name" value="<%= wgForm.name || '' %>" placeholder="mis. vpn-sg-1" autocapitalize="none" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="col-12">
+              <textarea class="form-control font-monospace" id="wg_config" name="config" rows="7" spellcheck="false" autocomplete="off" aria-label="Isi config WireGuard" placeholder="[Interface]&#10;PrivateKey = …&#10;Address = 10.64.0.2/32&#10;DNS = 10.64.0.1&#10;&#10;[Peer]&#10;PublicKey = …&#10;Endpoint = vpn.example.com:51820&#10;AllowedIPs = 0.0.0.0/0"><%= wgForm.config || '' %></textarea>
+              <small class="form-hint">Format wg-quick biasa. <code>PostUp</code>/<code>PreDown</code> diabaikan (tidak ada perintah yang dijalankan). Tanpa <code>DNS</code>, dipakai 1.1.1.1 dan 9.9.9.9 — tetap lewat tunnel. Jangan pakai config yang sama di perangkat lain bersamaan — server VPN akan bingung dan koneksi tersendat.</small>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-plus-lg me-1"></i>Add Config</button>
+        </form>
+      </div>
+    </section>
+  </div>
+
   <!-- Security: the signed-in admin's own account -->
   <div class="col-12">
     <section class="card" id="security">
@@ -169,7 +240,7 @@
         <div class="row g-4">
           <div class="col-lg-6">
             <h3 class="h6">Download backup</h3>
-            <p class="small text-body-secondary">File SQLite berisi semua website, page config, settings, dan akun admin (hash password + secret 2FA) — simpan di tempat aman. Untuk satu website saja: buka halaman website itu → <em>Backup &amp; Restore</em> (format file sama).</p>
+            <p class="small text-body-secondary">File SQLite berisi semua website, page config, settings, akun admin (hash password + secret 2FA), dan config WireGuard (termasuk private key) — simpan di tempat aman. Untuk satu website saja: buka halaman website itu → <em>Backup &amp; Restore</em> (format file sama).</p>
             <a href="/admin/backup" class="btn btn-outline-info"><i class="bi bi-download me-1"></i>Download Backup</a>
           </div>
           <div class="col-lg-6">

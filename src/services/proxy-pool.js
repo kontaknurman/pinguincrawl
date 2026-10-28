@@ -15,6 +15,7 @@
  */
 
 const { parseProxy } = require('./browser');
+const wireguard = require('./wireguard');
 
 const ROTATIONS = ['round_robin', 'random', 'failover'];
 const COOLDOWN_MS = 5 * 60 * 1000;
@@ -24,6 +25,15 @@ const cursors = new Map();  // website key -> index of the next round_robin prox
 // rotating residential gateways hand out one host:port with a different user per session,
 // and one dead session must not rest all the others. Never leaves this module.
 const health = new Map();
+
+/**
+ * What a website crawls through: its proxy list, or — with proxy type "wireguard" — its
+ * selected WireGuard configs as "wireguard:<name>" entries. Both rotate the same way.
+ */
+function websiteProxies(website) {
+  if (!website) return [];
+  return website.proxy_type === 'wireguard' ? wireguard.websiteEntries(website) : parseProxyList(website.proxy);
+}
 
 /** The proxy field as a list: one per line, blank lines and # comments ignored. */
 function parseProxyList(text) {
@@ -50,6 +60,7 @@ function normalizeProxyList(text) {
 }
 
 function displayOf(proxy) {
+  if (wireguard.isEntry(proxy)) return `wireguard ${wireguard.entryName(proxy)}`;
   try {
     return parseProxy(proxy).display;
   } catch {
@@ -58,6 +69,7 @@ function displayOf(proxy) {
 }
 
 function keyOf(proxy) {
+  if (wireguard.isEntry(proxy)) return proxy;
   try {
     return parseProxy(proxy).server;
   } catch {
@@ -130,6 +142,7 @@ function status(list) {
 module.exports = {
   ROTATIONS,
   COOLDOWN_MS,
+  websiteProxies,
   parseProxyList,
   normalizeProxyList,
   displayOf,

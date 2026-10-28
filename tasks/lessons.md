@@ -99,6 +99,15 @@
 
 ---
 
+## 2026-10-28 - Child Processes
+
+**Mistake**: wireproxy read its config from `/dev/stdin`, which worked in every shell test (`cat conf | wireproxy -c /dev/stdin`) — and failed with `open /dev/stdin: no such device or address` the moment the app spawned it. The E2E harness repeated the mistake for its own fake VPN servers, so a whole run "failed" with dead tunnels.
+**Pattern**: Node's child_process stdio "pipes" are socketpairs, not pipes. A program that opens `/dev/stdin` (or `/proc/self/fd/0`) by path gets ENXIO on a socket; one that reads fd 0 directly works. A shell pipeline is not a faithful stand-in for spawn().
+**Rule**: Prototype a child-process interface with the real spawn() call, not a shell. To hand a secret to a program that only takes a path, use a 0600 file with an unguessable name on tmpfs (`/dev/shm`) and delete it as soon as the program has read it.
+**Applied**: `src/services/wireguard.js` `writeSecretFile()`, `startTunnel()`, `checkWithWireproxy()`
+
+---
+
 ## 2026-03-20 - Feature Scope
 
 **Mistake**: When user asked for "custom config", implemented only custom JSON response fields. User actually wanted custom page types (new config types + API endpoints), not just custom fields within existing configs.

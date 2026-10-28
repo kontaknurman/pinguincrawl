@@ -2,6 +2,7 @@ const dns = require('dns');
 const net = require('net');
 const puppeteer = require('puppeteer-core');
 const lightpanda = require('./lightpanda');
+const wireguard = require('./wireguard');
 
 // Only used by fetchPageSimple (plain HTTP mode). Lightpanda sends its own
 // "Lightpanda/1.0" User-Agent and refuses any value containing "Mozilla".
@@ -136,43 +137,48 @@ async function proxyCidrs(proxyInfo) {
  * same machine can read a process's arguments — no concern inside the container.
  */
 async function getBrowser(proxy, { timezone = null, blockImages = false, crossOriginFetch = false, waitTimeout = 0 } = {}) {
-  const proxyInfo = parseProxy(proxy);
-
-  // Stylesheets so computed styles (visibility checks, CSS-driven scripts) are real
-  const loadResources = blockImages ? ['stylesheet'] : ['stylesheet', 'image'];
-
-  const lp = await lightpanda.launch({
-    proxy: proxyInfo ? proxyInfo.server : null,
-    timezone: validTimezone(timezone),
-    loadResources,
-    httpTimeoutMs: Math.max(15000, waitTimeout || 0),
-    disableCors: crossOriginFetch,
-    blockPrivateNetworks: crossOriginFetch,
-    allowCidrs: crossOriginFetch ? await proxyCidrs(proxyInfo) : [],
-  });
-
-  let browser;
+  // A WireGuard config is reached through its local wireproxy SOCKS5 server (started on
+  // first use, shared, kept while any crawl holds it)
+  const tunnel = wireguard.isEntry(proxy) ? await wireguard.acquire(wireguard.entryName(proxy)) : null;
+  let lp;
   try {
+    const proxyInfo = tunnel ? { server: tunnel.server, display: tunnel.display, hostname: '127.0.0.1' } : parseProxy(proxy);
+
+    // Stylesheets so computed styles (visibility checks, CSS-driven scripts) are real
+    const loadResources = blockImages ? ['stylesheet'] : ['stylesheet', 'image'];
+
+    lp = await lightpanda.launch({
+      proxy: proxyInfo ? proxyInfo.server : null,
+      timezone: validTimezone(timezone),
+      loadResources,
+      httpTimeoutMs: Math.max(15000, waitTimeout || 0),
+      disableCors: crossOriginFetch,
+      blockPrivateNetworks: crossOriginFetch,
+      allowCidrs: crossOriginFetch ? await proxyCidrs(proxyInfo) : [],
+    });
+
     // defaultViewport null: Lightpanda reports a fixed 1920x1080 window; no emulation needed
-    browser = await puppeteer.connect({ browserWSEndpoint: lp.wsEndpoint, defaultViewport: null });
+    const browser = await puppeteer.connect({ browserWSEndpoint: lp.wsEndpoint, defaultViewport: null });
+
+    browser._lightpanda = lp;
+    browser._proxy = proxyInfo ? proxyInfo.display : null;
+
+    // Closing means disconnecting AND stopping the server — Lightpanda keeps running after
+    // its client leaves, and Puppeteer's own close() only sends Browser.close over CDP.
+    browser.close = async () => {
+      try {
+        await browser.disconnect();
+      } catch { /* connection already gone */ }
+      await lightpanda.stop(lp.proc);
+      if (tunnel) tunnel.release();
+    };
+
+    return browser;
   } catch (err) {
-    await lightpanda.stop(lp.proc);
+    if (lp) await lightpanda.stop(lp.proc);
+    if (tunnel) tunnel.release();
     throw err;
   }
-
-  browser._lightpanda = lp;
-  browser._proxy = proxyInfo ? proxyInfo.display : null;
-
-  // Closing means disconnecting AND stopping the server — Lightpanda keeps running after
-  // its client leaves, and Puppeteer's own close() only sends Browser.close over CDP.
-  browser.close = async () => {
-    try {
-      await browser.disconnect();
-    } catch { /* connection already gone */ }
-    await lightpanda.stop(lp.proc);
-  };
-
-  return browser;
 }
 
 // Lightpanda refuses to impersonate another browser: a User-Agent containing "Mozilla"
