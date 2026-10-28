@@ -165,8 +165,9 @@ Dua jenis backup, keduanya file SQLite `.db` dengan tabel yang sama:
   itu — pengaturan (termasuk cookie dan proxy yang dipilihnya, lengkap dengan alamat + login), page config,
   dan custom page type. Akun admin, API key, settings lain (termasuk default global proxy), log, dan cache
   gambar tidak ikut; config WireGuard hanya namanya. Nama file `pinguincrawl-backup-<website>-<waktu>.db`.
-  Saat di-restore, proxy-nya masuk ke Settings → Proxy (yang alamatnya sama dipakai ulang; nama yang sudah
-  dipakai proxy lain diberi akhiran `-2`).
+  Saat di-restore, proxy-nya masuk ke Settings → Proxy: yang alamat + login-nya sama dipakai ulang, begitu
+  juga entri untuk akun yang sama (user + alamat sama, hanya password beda — yang di server ini dianggap terbaru);
+  nama yang sudah dipakai proxy lain diberi akhiran `-2`. Toast restore menyebut berapa entri baru dibuat.
 
 Restore per website:
 - **Di halaman website**: upload backup website itu, atau backup lengkap — website dengan nama yang sama
@@ -206,8 +207,8 @@ proxy per website.
 - **Rotasi**: **Bergiliran** — tiap crawl yang berikutnya; **Acak**; **Cadangan** — selalu nomor 1, sisanya hanya saat itu gagal (urutan = urutan baris di select). Proxy dan config WireGuard boleh dicampur.
 - **Proxy gagal** (tidak bisa dihubungi, login salah, terlalu lambat) langsung diganti yang lain di request yang sama — maks. 3 kali, tidak memakai jatah *Retry count* — lalu **diistirahatkan 5 menit**. Kalau semua sedang istirahat, semuanya tetap dicoba. Error API menyebut proxy-nya (tanpa password), mis. `CouldntConnect at https://… [proxy sg-1 (http://1.2.3.4:8080)]`.
 - **Status**: Settings → Proxy dan halaman edit website menampilkan status tiap proxy (OK / gagal · istirahat / belum dipakai). **Test** (Settings → Proxy) membuka `PROXY_TEST_URL` lewat proxy itu dengan Lightpanda, persis seperti crawl; **Cek semua** di halaman website (atau Settings → Cek Lightpanda per website) membuka base URL lewat tiap proxy-nya. Status disimpan di memori, mulai dari nol setelah restart.
-- **Yang lewat proxy**: halaman, semua request JavaScript-nya, dan cache gambar metode **Browser**. **Tidak** lewat proxy: metode **Node.js HTTP**, **Lazy Proxy**, dan mode HTTP biasa (JS off). Page config bisa mematikan proxy per page type (**Force OFF**).
-- **Upgrade dari versi lama** (atau restore backup lama / crawlkomik): daftar proxy tiap website otomatis dipindah ke Settings → Proxy dan website itu memilihnya dengan urutan + rotasi yang sama; pilihan WireGuard ikut pindah. Website tanpa proxy jadi *Default global* (default awalnya: tanpa proxy), jadi crawl tetap sama persis.
+- **Yang lewat proxy**: halaman, semua request JavaScript-nya, dan cache gambar metode **Browser**. **Tidak** lewat proxy: metode **Node.js HTTP**, **Lazy Proxy**, dan mode HTTP biasa (JS off). Page config bisa mematikan proxy per page type (**Force OFF**) atau memaksanya (**Force ON** — di website yang memilih *Tanpa proxy*, memakai default global).
+- **Upgrade dari versi lama** (atau restore backup lama / crawlkomik): daftar proxy tiap website otomatis dipindah ke Settings → Proxy dan website itu memilihnya dengan urutan + rotasi yang sama; pilihan WireGuard ikut pindah. Proxy yang sama (alamat + login sama, walau ditulis beda format) jadi satu entri. Website tanpa proxy jadi *Default global* (default awalnya: tanpa proxy), jadi crawl tetap sama persis — tapi begitu default global diisi, website itu ikut memakainya (bagian Default global menyebut website mana saja); pilih *Tanpa proxy* untuk yang harus tetap langsung. Daftar lama tetap tersimpan di database, jadi kalau kembali ke versi sebelumnya, website memakai daftar lamanya lagi.
 - Kredensial proxy diteruskan ke Lightpanda di argumen `--http-proxy` — satu-satunya cara yang jalan untuk situs HTTPS (tunnel CONNECT) dan SOCKS. Artinya user lain di mesin yang sama bisa melihatnya lewat `ps`; di dalam container Docker hal ini tidak berlaku.
 
 ## WireGuard (VPN)

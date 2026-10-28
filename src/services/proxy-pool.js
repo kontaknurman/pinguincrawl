@@ -14,7 +14,7 @@
  * down, which costs at most one failed attempt per dead proxy.
  */
 
-const { parseProxy } = require('./browser');
+const { parseProxy } = require('./proxy-url');
 const db = require('../models/database');
 const refs = require('./proxy-refs');
 
@@ -43,11 +43,14 @@ function selectionFor(website) {
   }
   const choice = String((website && website.proxy_refs) || refs.DEFAULT).trim();
   if (choice === refs.NONE) return { entries: [], rotation: 'round_robin', source: 'none' };
-  if (choice === refs.DEFAULT) {
-    const d = db.getDefaultProxy();
-    return { entries: d.refs, rotation: d.rotation, source: 'default' };
-  }
+  if (choice === refs.DEFAULT) return defaultSelection();
   return { entries: refs.refList(choice).filter((r) => refs.parseRef(r)), rotation, source: 'website' };
+}
+
+/** The global default (Settings → Proxy), in the same shape. */
+function defaultSelection() {
+  const d = db.getDefaultProxy();
+  return { entries: d.refs, rotation: d.rotation, source: 'default' };
 }
 
 /** A proxy list as text: one per line, blank lines and # comments ignored. */
@@ -148,6 +151,7 @@ module.exports = {
   ROTATIONS,
   COOLDOWN_MS,
   selectionFor,
+  defaultSelection,
   parseProxyList,
   displayOf,
   pick,

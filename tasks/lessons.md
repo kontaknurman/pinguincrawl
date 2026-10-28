@@ -115,6 +115,10 @@
 **Rule**: Until a row is converted, keep running it with its old meaning (read the old columns), make the conversion all-or-nothing and retry it, and only map "nothing configured" to the new default.
 **Applied**: `src/services/proxy-pool.js` `selectionFor()`, `src/models/database.js` `convertLegacyProxies()`, `src/services/backup.js` `restoreWebsite()`
 
+**Mistake 2** (found by an independent review): the add form compared proxies by their parsed address, but the startup conversion and the backup import compared raw text — so `1.2.3.4:8080:user:pass` and `http://user:pass@1.2.3.4:8080` became two entries that the edit form then refused to rename or update. The conversion also emptied the old columns, so rolling back to the previous version would have made every website crawl directly.
+**Rule**: Every path that can create the same entity (form, migration, import) must use one shared identity function on the normalized value. A migration leaves the old data in place unless keeping it is harmful — the previous version may run on this database again.
+**Applied**: `src/services/proxy-url.js` `sameProxyKey()` / `accountKey()`, `src/models/database.js` `ensureProxy()` / `importProxy()`
+
 ---
 
 ## 2026-03-20 - Feature Scope

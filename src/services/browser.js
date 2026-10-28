@@ -4,6 +4,7 @@ const puppeteer = require('puppeteer-core');
 const lightpanda = require('./lightpanda');
 const wireguard = require('./wireguard');
 const refs = require('./proxy-refs');
+const { parseProxy } = require('./proxy-url');
 
 // Only used by fetchPageSimple (plain HTTP mode). Lightpanda sends its own
 // "Lightpanda/1.0" User-Agent and refuses any value containing "Mozilla".
@@ -52,47 +53,6 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const PROXY_DEFAULT_PORTS = { 'http:': 80, 'https:': 443, 'socks4:': 1080, 'socks4a:': 1080, 'socks5:': 1080, 'socks5h:': 1080 };
-
-/**
- * Parse one proxy. Accepts
- *   http://user:pass@host:port   socks5://user:pass@host:port   user:pass@host:port
- *   host:port                    host:port:user:pass (how proxy providers export lists)
- * Returns { server, display, hostname }: `server` is the URL handed to Lightpanda,
- * credentials included; `display` has no credentials and is safe to log or show.
- * Throws on anything else, so a typo is reported instead of crawling without a proxy.
- */
-function parseProxy(proxy) {
-  let s = String(proxy || '').trim();
-  if (!s) return null;
-  // host:port:user:pass — host and port first, so a password may contain ':' or '@'
-  const hostPortUserPass = !s.includes('://') && /^([^:@\s/]+):(\d{1,5}):([^:\s]+):(.+)$/.exec(s);
-  if (hostPortUserPass) {
-    const [, host, port, user, pass] = hostPortUserPass;
-    s = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
-  }
-  let parsed;
-  try {
-    parsed = new URL(s.includes('://') ? s : `http://${s}`);
-  } catch {
-    throw new Error(`Invalid proxy "${proxy}" — use http://user:pass@host:port, socks5://host:port or host:port:user:pass`);
-  }
-  if (!PROXY_DEFAULT_PORTS[parsed.protocol] || !parsed.hostname || parsed.pathname.length > 1) {
-    throw new Error(`Invalid proxy "${parsed.protocol}//${parsed.host}" — supported: http, https, socks4, socks5`);
-  }
-  // Like Chrome, let a SOCKS5 proxy resolve hostnames itself: no DNS lookups leak past it
-  const protocol = parsed.protocol === 'socks5:' ? 'socks5h:' : parsed.protocol;
-  // Always explicit: libcurl assumes 1080 for a proxy without a port, URL parsing drops a default 80
-  const hostPort = `${parsed.hostname}:${parsed.port || PROXY_DEFAULT_PORTS[parsed.protocol]}`;
-  // username/password are still percent-encoded here, which is what a proxy URL needs
-  const auth = parsed.username ? `${parsed.username}${parsed.password ? ':' + parsed.password : ''}@` : '';
-  return {
-    server: `${protocol}//${auth}${hostPort}`,
-    display: `${protocol}//${hostPort}`,
-    hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
-  };
-}
-
 /** An entry of Settings → Proxy, parsed; errors count as the proxy failing (try the next). */
 function settingsProxy(name) {
   const row = db.getProxyByName(name);
@@ -104,6 +64,7 @@ function settingsProxy(name) {
   } catch (err) {
     throw fail(err.message);
   }
+  if (!info) throw fail('no address — set one under Settings → Proxy');
   return { ...info, display: `${name} (${info.display})` };
 }
 

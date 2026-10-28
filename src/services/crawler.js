@@ -15,9 +15,10 @@ const MAX_PROXY_SWITCHES = 3;
 function buildFetchOptions(website, pageConfig) {
   // Per-config proxy override: 0=use website default, 1=force on, 2=force off
   const proxyOverride = pageConfig?.use_proxy ?? 0;
-  // proxyOverride 1 (force on) just keeps the website's choice as-is: its own proxies /
-  // WireGuard configs, or the global default; the rotation treats both kinds alike.
-  const selection = proxyOverride === 2 ? { entries: [], rotation: 'round_robin' } : proxyPool.selectionFor(website);
+  // The website's choice: its own proxies / WireGuard configs, or the global default; the
+  // rotation treats both kinds alike. Force ON on a website without any takes the default's.
+  let selection = proxyOverride === 2 ? { entries: [], rotation: 'round_robin' } : proxyPool.selectionFor(website);
+  if (proxyOverride === 1 && !selection.entries.length) selection = proxyPool.defaultSelection();
 
   const options = {
     // One per crawl attempt is picked from these in fetchPageAuto

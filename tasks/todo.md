@@ -290,3 +290,19 @@ website memilih lewat select (proxy maupun VPN).
 - Suite lain disesuaikan ke model baru lalu diulang: E2E **64/64**, rotasi **22/22**, migrasi crawlkomik
   **12/12**, backup per website **47/47**, UI **51/51**, UI backup **36/36**, WireGuard **51/51**,
   UI WireGuard **38/38**, Docker WireGuard **7/7**, auth **95/95**, body aneh **12/12**, UI auth **46/46**.
+- Review independen menemukan 3 bug + 2 kecil, semuanya diperbaiki dan diberi tes (E2E daftar proxy
+  sekarang **79/79**):
+  - konversi/restore membandingkan teks persis → proxy yang sama dengan format beda jadi entri ganda
+    (lalu tidak bisa diganti nama/diubah password). Sekarang dibandingkan alamat + login hasil parse
+    (`services/proxy-url.js`, tanpa dependensi); restore memakai ulang entri akun yang sama (hanya password
+    beda) dan toast menyebut jumlah entri baru; entri yang sudah kembar tetap bisa diganti nama.
+  - konversi mengosongkan kolom lama → kembali ke versi sebelumnya membuat semua website crawl langsung.
+    Kolom lama sekarang dibiarkan (hanya dibaca selama `proxy_refs` NULL).
+  - form website dari tab lama (masih textarea proxy) tersimpan diam-diam sebagai Default global →
+    sekarang ditolak dengan pesan "reload"; form tanpa field proxy sama sekali tidak mengubah pilihan.
+  - entri tanpa alamat → error biasa tanpa failover; sekarang dianggap proxy gagal (lanjut ke berikutnya).
+  - website yang konversinya gagal dicoba dikonversi ulang saat halamannya dibuka.
+  - Force ON di website "Tanpa proxy" sekarang memakai default global.
+- Semua suite diulang setelah perbaikan: UI proxy **70/70**, E2E **64/64**, rotasi **22/22**, migrasi
+  **12/12**, backup per website **47/47**, UI backup **36/36**, UI **51/51**, WireGuard **51/51**,
+  UI WireGuard **38/38**, Docker **7/7**, auth **95/95**, body aneh **12/12**, UI auth **46/46**.

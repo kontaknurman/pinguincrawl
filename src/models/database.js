@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const refs = require('../services/proxy-refs');
+const { sameProxyKey, accountKey } = require('../services/proxy-url');
 
 const DB_PATH = path.join(__dirname, '..', '..', 'data', 'pinguincrawl.db');
 
@@ -315,34 +316,45 @@ function freeProxyName(base) {
   for (let i = 2; ; i++) if (!taken(`${base.slice(0, 58)}-${i}`)) return `${base.slice(0, 58)}-${i}`;
 }
 
-/** The library entry for this exact proxy line, created when there is none. Returns its name. */
-function ensureProxy(line) {
-  const existing = db.prepare('SELECT name FROM proxies WHERE url = ?').get(line);
-  if (existing) return existing.name;
+/** { same-proxy key: name } of the library, to find a proxy however it is written. */
+function proxyKeys() {
+  return new Map(db.prepare('SELECT name, url FROM proxies ORDER BY id').all().map((p) => [sameProxyKey(p.url), p.name]));
+}
+
+/** The library entry for this proxy (same address and login), created when there is none. */
+function ensureProxy(line, keys) {
+  const key = sameProxyKey(line);
+  if (keys.has(key)) return keys.get(key);
   const name = freeProxyName(proxyBaseName(line));
   db.prepare('INSERT INTO proxies (name, url) VALUES (?, ?)').run(name, line);
+  keys.set(key, name);
   return name;
 }
 
 /**
  * Websites still on their own proxy list (proxy_refs NULL: older database, or an older
- * website backup just restored) move to the library: every line becomes a named entry (one
- * per distinct line, shared between websites) and the website refers to them, keeping its
- * rotation. A WireGuard selection becomes WireGuard refs. Nothing configured → "default".
+ * website backup just restored) move to the library: every proxy becomes a named entry (one
+ * per proxy, shared between websites, however each wrote it) and the website refers to them,
+ * keeping its order and rotation. A WireGuard selection becomes WireGuard refs. Nothing
+ * configured → "default". The old columns stay as they were: only read while proxy_refs is
+ * NULL, and the previous version, run on this database again, still finds its lists.
  * All or nothing; throws on failure.
  */
 function convertLegacyProxies(ids = null) {
   const where = ids ? `AND id IN (${ids.map(() => '?').join(', ')})` : '';
   const rows = db.prepare(`SELECT id, name, proxy, proxy_type, wireguard FROM websites WHERE proxy_refs IS NULL ${where}`).all(...(ids || []));
-  const moved = db.transaction(() => rows.map((w) => {
-    // Every old proxy line gets an entry, even on a website that used WireGuard: nothing is lost
-    const proxyRefs = proxyLines(w.proxy).map((line) => refs.proxyRef(ensureProxy(line)));
-    const wgRefs = proxyLines(w.wireguard).map((n) => refs.wireguardRef(n));
-    const chosen = [...new Set(w.proxy_type === 'wireguard' && wgRefs.length ? wgRefs : proxyRefs)];
-    db.prepare("UPDATE websites SET proxy_refs = ?, proxy = NULL, proxy_type = 'proxy', wireguard = NULL WHERE id = ?")
-      .run(chosen.length ? chosen.join('\n') : refs.DEFAULT, w.id);
-    return { name: w.name, n: chosen.length };
-  }))();
+  if (!rows.length) return;
+  const moved = db.transaction(() => {
+    const keys = proxyKeys();
+    return rows.map((w) => {
+      // Every old proxy line gets an entry, even on a website that used WireGuard: nothing is lost
+      const proxyRefs = proxyLines(w.proxy).map((line) => refs.proxyRef(ensureProxy(line, keys)));
+      const wgRefs = proxyLines(w.wireguard).map((n) => refs.wireguardRef(n));
+      const chosen = [...new Set(w.proxy_type === 'wireguard' && wgRefs.length ? wgRefs : proxyRefs)];
+      db.prepare('UPDATE websites SET proxy_refs = ? WHERE id = ?').run(chosen.length ? chosen.join('\n') : refs.DEFAULT, w.id);
+      return { name: w.name, n: chosen.length };
+    });
+  })();
   for (const { name, n } of moved) {
     if (n) console.log(`[Proxy] "${name}": its proxy list moved to Settings → Proxy (${n} entr${n === 1 ? 'y' : 'ies'})`);
   }
@@ -414,7 +426,8 @@ function updateWebsite(id, { name, base_url, active, proxy_refs, proxy_rotation,
   const stmt = getDb().prepare(
     `UPDATE websites SET name=?, base_url=?, active=?, proxy_refs=?, proxy_rotation=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
   );
-  return stmt.run(name, base_url, active ? 1 : 0, proxy_refs || refs.DEFAULT, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
+  // proxy_refs null keeps a website that is still on its old list (see convertLegacyProxies) there
+  return stmt.run(name, base_url, active ? 1 : 0, proxy_refs === undefined ? refs.DEFAULT : proxy_refs, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
 }
 
 function updateWebsiteCookies(id, cookies) {
@@ -773,18 +786,27 @@ function suggestProxyName(line) {
 }
 
 /**
- * A proxy from a website backup: the entry with the same address when there is one,
- * otherwise added — under its own name if that is free here. Returns its name here.
+ * A proxy from a website backup, as { name, added } — the name it has here:
+ *   - an entry with the same address and login, whatever its name;
+ *   - an entry for the same account (scheme, user, host, port) whose password differs: the
+ *     one here counts as the newer (the one with the backup's name first);
+ *   - otherwise added, under its own name if that is free here.
+ * Null for an entry without an address (not imported).
  */
 function importProxy({ name, url }) {
   const d = getDb();
   const address = String(url || '').trim();
-  const existing = d.prepare('SELECT name FROM proxies WHERE url = ?').get(address);
-  if (existing) return existing.name;
+  if (!address) return null;
+  const same = proxyKeys().get(sameProxyKey(address));
+  if (same) return { name: same, added: false };
+  const account = accountKey(address);
+  const sameAccount = account ? d.prepare('SELECT name, url FROM proxies ORDER BY id').all().filter((p) => accountKey(p.url) === account) : [];
+  const reuse = sameAccount.find((p) => p.name === String(name)) || sameAccount[0];
+  if (reuse) return { name: reuse.name, added: false };
   const wanted = /^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(name)) ? String(name) : proxyBaseName(address);
   const free = freeProxyName(wanted);
   d.prepare('INSERT INTO proxies (name, url) VALUES (?, ?)').run(free, address);
-  return free;
+  return { name: free, added: true };
 }
 
 // --- WireGuard configs (Settings → WireGuard) ---

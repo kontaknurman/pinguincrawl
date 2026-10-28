@@ -140,9 +140,10 @@ function exportWebsite(id, file) {
 /**
  * Puts a website read from a backup into this database: over website `targetId`, or as a
  * new website when that is null. Its page configs and custom page types replace the
- * current ones and its proxies join Settings → Proxy (an entry with the same address is
- * reused); nothing else changes (other websites, image cache, logs). Columns the backup
- * lacks get their defaults, ids are this database's own. Returns the website id.
+ * current ones and its proxies join Settings → Proxy (see db.importProxy for which existing
+ * entries are reused); nothing else changes (other websites, image cache, logs). Columns
+ * the backup lacks get their defaults, ids are this database's own.
+ * Returns { id, proxiesAdded } — proxiesAdded: entries it created in Settings → Proxy.
  */
 function restoreWebsite({ website, pageConfigs, customPageTypes, proxies = [] }, targetId = null) {
   const live = db.getDb();
@@ -162,14 +163,23 @@ function restoreWebsite({ website, pageConfigs, customPageTypes, proxies = [] },
     insertRows(live, 'custom_page_types', customPageTypes.map((row) => ({ ...row, website_id: id })), ['id']);
     // Its proxies by the names they have here (one may exist under another name, or its
     // name may be taken by another proxy)
-    const here = new Map(proxies.map((p) => [refs.proxyRef(p.name), refs.proxyRef(db.importProxy(p))]));
+    const here = new Map();
+    let proxiesAdded = 0;
+    for (const p of proxies) {
+      const got = db.importProxy(p);
+      if (!got) continue;
+      here.set(refs.proxyRef(p.name), refs.proxyRef(got.name));
+      if (got.added) proxiesAdded++;
+    }
     if (website.proxy_refs != null && [...here].some(([from, to]) => from !== to)) {
       const text = refs.refList(website.proxy_refs).map((r) => here.get(r) || r).join('\n');
       live.prepare('UPDATE websites SET proxy_refs = ? WHERE id = ?').run(text, id);
     }
     // A backup from before Settings → Proxy: the website's own list moves there now
+    const before = live.prepare('SELECT COUNT(*) AS c FROM proxies').get().c;
     db.convertLegacyProxies([id]);
-    return id;
+    proxiesAdded += live.prepare('SELECT COUNT(*) AS c FROM proxies').get().c - before;
+    return { id, proxiesAdded };
   })();
 }
 

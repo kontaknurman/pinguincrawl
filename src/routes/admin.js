@@ -9,7 +9,8 @@ const { requireAuth, createAuthCookie, clearAuthCookie, create2faPendingCookie, 
 const OTPAuth = require('otpauth');
 const QRCode = require('qrcode');
 const { clearAllImages } = require('../services/image-proxy');
-const { getActiveBrowserCount, parseProxy } = require('../services/browser');
+const { getActiveBrowserCount } = require('../services/browser');
+const { parseProxy, sameProxyKey } = require('../services/proxy-url');
 const browserCheck = require('../services/browser-check');
 const lightpanda = require('../services/lightpanda');
 const proxyPool = require('../services/proxy-pool');
@@ -57,6 +58,7 @@ const FLASH = {
     website_saved: 'Website saved',
     website_deleted: 'Website deleted',
     website_restored: 'Website restored from the backup',
+    website_restored_proxies: 'Website restored from the backup — proxies it uses added to Settings → Proxy: {n}',
     proxy_default: 'Default proxy saved — websites set to "Default global" use it from the next crawl',
     proxy_added: 'Proxies added: {n}',
     proxy_saved: 'Proxy saved — websites using it switch at their next crawl',
@@ -407,15 +409,6 @@ function renderProxy(req, res, { error = null, ok = null, form = {} } = {}) {
   }));
 }
 
-// The same proxy (address + login), however it is written
-function serverOf(url) {
-  try {
-    return parseProxy(url).server;
-  } catch {
-    return String(url);
-  }
-}
-
 router.post('/proxy-default', express.urlencoded({ extended: true }), (req, res) => {
   try {
     const choice = pickerChoice(req.body, { allowDefault: false, keep: db.getDefaultProxy().refs });
@@ -438,7 +431,7 @@ router.post('/proxies', express.urlencoded({ extended: true }), (req, res) => {
   if (nameText.trim() && !prefix) return fail('Name: use letters, numbers, dot, dash or underscore');
   if (prefix && lines.length === 1 && db.getProxyByName(prefix)) return fail(`A proxy named "${prefix}" already exists`);
 
-  const known = new Map(db.getProxies().map((p) => [serverOf(p.url), p.name]));
+  const known = new Map(db.getProxies().map((p) => [sameProxyKey(p.url), p.name]));
   const fresh = [];
   const skipped = [];
   for (const [i, line] of lines.entries()) {
@@ -505,7 +498,8 @@ router.post('/proxies/:id', express.urlencoded({ extended: true }), (req, res) =
     return fail(err.message);
   }
   if (!server) return fail('Address is required');
-  const dup = db.getProxies().find((q) => q.id !== p.id && serverOf(q.url) === server);
+  // Only a new address can clash (entries that already share one can still be renamed)
+  const dup = server !== sameProxyKey(p.url) && db.getProxies().find((q) => q.id !== p.id && sameProxyKey(q.url) === server);
   if (dup) return fail(`That proxy is already in the list as "${dup.name}"`);
   db.updateProxy(p.id, { name, url });
   proxyPool.forget(refs.proxyRef(p.name)); // a new address starts with a clean slate
@@ -755,6 +749,22 @@ function timezoneField(value) {
   return tz;
 }
 
+// The website's proxy choice from its form. A form without the picker leaves it as it is —
+// unless it is a form from before Settings → Proxy (a tab left open across the update), whose
+// own proxy list would otherwise be dropped without a word.
+function websiteProxyFields(body, current) {
+  if (body.proxy_main === undefined) {
+    if (['proxy', 'proxy_type', 'wireguard'].some((k) => k in body)) {
+      throw new Error('This page is from before the proxy update — reload it and choose the proxy again (proxies are now kept under Settings → Proxy)');
+    }
+    return current ? { proxy_refs: current.proxy_refs, proxy_rotation: current.proxy_rotation } : { proxy_refs: refs.DEFAULT, proxy_rotation: 'round_robin' };
+  }
+  return {
+    proxy_refs: pickerChoice(body, { allowDefault: true, keep: current ? refs.refList(current.proxy_refs) : [] }),
+    proxy_rotation: rotationField(body.proxy_rotation),
+  };
+}
+
 // `current`: the website being edited (null for a new one)
 function websiteFromBody(body, current = null) {
   const name = (body.name || '').trim().toLowerCase();
@@ -765,8 +775,7 @@ function websiteFromBody(body, current = null) {
     name,
     base_url: baseUrl,
     active: body.active === 'on',
-    proxy_refs: pickerChoice(body, { allowDefault: true, keep: current ? refs.refList(current.proxy_refs) : [] }),
-    proxy_rotation: rotationField(body.proxy_rotation),
+    ...websiteProxyFields(body, current),
     user_agent: body.user_agent,
     image_proxy: body.image_proxy === 'on',
     image_cache_method: IMAGE_CACHE_METHODS.includes(body.image_cache_method) ? body.image_cache_method : 'browser',
@@ -831,6 +840,8 @@ function fileSafe(name) {
 
 // Our own messages are meant for the admin as they are; anything else gets context
 const restoreMessage = (err) => (err.code ? `Restore failed: ${err.message}` : err.message);
+// Says so when the restore created entries in Settings → Proxy
+const restoredFlash = (proxiesAdded) => (proxiesAdded ? `ok=website_restored_proxies&n=${proxiesAdded}` : 'ok=website_restored');
 
 // New website from a backup (Add Website page): a website backup, or one website of a full backup.
 // Registered before /websites/:id, which would take "restore" for an id.
@@ -845,8 +856,8 @@ router.post('/websites/restore', upload.single('dbfile'), (req, res) => {
     if (db.getWebsiteByName(data.website.name)) {
       return fail(`A website named "${data.website.name}" already exists — open it and restore there (Backup & Restore)`);
     }
-    const id = backup.restoreWebsite(data);
-    res.redirect(`/admin/websites/${id}?ok=website_restored`);
+    const { id, proxiesAdded } = backup.restoreWebsite(data);
+    res.redirect(`/admin/websites/${id}?${restoredFlash(proxiesAdded)}`);
   } catch (err) {
     fail(restoreMessage(err));
   } finally {
@@ -882,8 +893,8 @@ router.post('/websites/:id/restore', upload.single('dbfile'), (req, res) => {
     if (!req.file) return renderWebsiteBackupError(req, res, website, 'No file uploaded');
     const data = backup.readWebsiteBackup(req.file.path, website.name);
     backup.savePreRestoreSnapshot(); // same safety copy as the full restore
-    backup.restoreWebsite(data, website.id);
-    res.redirect(`/admin/websites/${website.id}?ok=website_restored`);
+    const { proxiesAdded } = backup.restoreWebsite(data, website.id);
+    res.redirect(`/admin/websites/${website.id}?${restoredFlash(proxiesAdded)}`);
   } catch (err) {
     renderWebsiteBackupError(req, res, website, restoreMessage(err));
   } finally {
@@ -893,8 +904,17 @@ router.post('/websites/:id/restore', upload.single('dbfile'), (req, res) => {
 
 // --- Edit Website ---
 router.get('/websites/:id', (req, res) => {
-  const website = db.getWebsiteById(req.params.id);
+  let website = db.getWebsiteById(req.params.id);
   if (!website) return res.redirect('/admin');
+  // Still on its old proxy list because moving it failed at startup: try again first
+  if (website.proxy_refs == null) {
+    try {
+      db.convertLegacyProxies([website.id]);
+      website = db.getWebsiteById(website.id);
+    } catch (err) {
+      console.warn(`[Proxy] "${website.name}": could not move its proxy list to Settings → Proxy (${err.message})`);
+    }
+  }
   res.render('pages/website-form', websiteFormLocals(req, website));
 });
 
@@ -908,7 +928,7 @@ router.post('/websites/:id', express.urlencoded({ extended: true }), (req, res) 
   } catch (err) {
     const message = err.message.includes('UNIQUE') ? `A website named "${(req.body.name || '').trim().toLowerCase()}" already exists` : err.message;
     // Keep what the admin typed — checkboxes are absent from the body when unchecked
-    const edited = { ...website, ...req.body, image_proxy: req.body.image_proxy === 'on', active: req.body.active === 'on', proxy_refs: pickerRaw(req.body) };
+    const edited = { ...website, ...req.body, image_proxy: req.body.image_proxy === 'on', active: req.body.active === 'on', proxy_refs: req.body.proxy_main === undefined ? website.proxy_refs : pickerRaw(req.body) };
     res.render('pages/website-form', websiteFormLocals(req, edited, {
       error: message, flash: { type: 'danger', text: message },
     }));
