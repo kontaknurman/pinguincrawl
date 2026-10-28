@@ -8,6 +8,7 @@
 <nav class="scroll-x mb-4" aria-label="Bagian settings">
   <a class="btn btn-sm btn-outline-secondary" href="#crawl"><i class="bi bi-window-stack me-1"></i>Crawl &amp; Browser</a>
   <a class="btn btn-sm btn-outline-secondary" href="#api"><i class="bi bi-key me-1"></i>Akses API</a>
+  <a class="btn btn-sm btn-outline-secondary" href="#proxy"><i class="bi bi-hdd-network me-1"></i>Proxy</a>
   <a class="btn btn-sm btn-outline-secondary" href="#wireguard"><i class="bi bi-shield-shaded me-1"></i>WireGuard</a>
   <a class="btn btn-sm btn-outline-secondary" href="#security"><i class="bi bi-shield-lock me-1"></i>Keamanan</a>
   <a class="btn btn-sm btn-outline-secondary" href="#backup"><i class="bi bi-database me-1"></i>Backup &amp; Restore</a>
@@ -96,6 +97,88 @@
     </section>
   </div>
 
+  <!-- Proxies (HTTP/HTTPS/SOCKS) every website can pick from, and the global default -->
+  <div class="col-12">
+    <section class="card" id="proxy">
+      <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+        <h2 class="section-title me-auto"><i class="bi bi-hdd-network me-1"></i>Proxy</h2>
+        <span class="badge bg-secondary-subtle text-secondary-emphasis"><%= px.entries.length %> proxy · <%= wg.configs.length %> WireGuard</span>
+      </div>
+      <div class="card-body">
+        <% if (proxyError) { %><div class="alert alert-danger py-2 small"><%= proxyError %></div><% } %>
+        <p class="small text-body-secondary">Semua proxy disimpan di sini sekali, lalu dipilih per website lewat menu <em>Proxy / VPN</em> di form website — bersama config <a href="#wireguard">WireGuard</a> di bawah. Ganti alamat atau login proxy cukup di sini; semua website yang memakainya ikut.</p>
+
+        <div class="row g-4">
+          <div class="col-lg-5">
+            <h3 class="h6">Default global</h3>
+            <form method="POST" action="/admin/proxy-default" id="proxyDefault">
+              <%- include('../partials/proxy-picker', { picker: px.picker }) %>
+              <small class="form-hint d-block">
+                Dipakai website yang memilih <em>Default global</em>
+                <% if (px.defaultUsers.length) { %>— sekarang: <%= px.defaultUsers.length > 6 ? px.defaultUsers.slice(0, 6).join(', ') + ' +' + (px.defaultUsers.length - 6) : px.defaultUsers.join(', ') %><% } else { %>— belum ada<% } %>.
+                Website baru otomatis memakai default ini.
+              </small>
+              <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-check-lg me-1"></i>Save Default</button>
+            </form>
+          </div>
+
+          <div class="col-lg-7">
+            <h3 class="h6">Tambah proxy</h3>
+            <form method="POST" action="/admin/proxies" id="proxyAdd">
+              <div class="mb-2">
+                <label class="form-label small" for="proxy_urls">Alamat — satu per baris <span class="text-body-secondary">(boleh banyak sekaligus)</span></label>
+                <textarea class="form-control font-monospace" id="proxy_urls" name="urls" rows="4" placeholder="http://user:pass@host:port&#10;socks5://user:pass@host:port&#10;host:port:user:pass" autocapitalize="none" spellcheck="false" autocomplete="off" required><%= proxyForm.urls || '' %></textarea>
+                <small class="form-hint">Format: <code>http://user:pass@host:port</code>, <code>https://…</code>, <code>socks5://…</code>, <code>socks4://…</code>, <code>host:port</code> atau <code>host:port:user:pass</code>.</small>
+              </div>
+              <div class="mb-2">
+                <label class="form-label small" for="proxy_name">Nama <span class="text-body-secondary">(opsional)</span></label>
+                <input type="text" class="form-control font-monospace" id="proxy_name" name="name" value="<%= proxyForm.name || '' %>" placeholder="mis. sg-residential" autocapitalize="none" spellcheck="false" autocomplete="off">
+                <small class="form-hint">Kosong = nama dari host-port (mis. <code>1.2.3.4-8080</code>). Untuk beberapa baris, nama ini jadi awalan: <code>nama-1</code>, <code>nama-2</code>, …</small>
+              </div>
+              <button type="submit" class="btn btn-primary mt-2"><i class="bi bi-plus-lg me-1"></i>Add Proxy</button>
+            </form>
+          </div>
+        </div>
+
+        <hr class="my-4">
+        <h3 class="h6">Daftar proxy</h3>
+        <% if (!px.entries.length) { %>
+          <p class="small text-body-secondary mb-0">Belum ada proxy. Tambahkan di atas, lalu pilih di form website atau jadikan default global.</p>
+        <% } else { %>
+        <div class="list-group" id="proxyList">
+          <% px.entries.forEach(e => { const h = e.health; %>
+          <div class="list-group-item py-3" data-proxy="<%= e.name %>">
+            <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 align-items-md-center">
+              <div class="min-w-0 flex-grow-1">
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                  <span class="fw-semibold font-monospace text-break"><%= e.name %></span>
+                  <span class="badge bg-secondary-subtle text-secondary-emphasis"><%= e.kind %></span>
+                  <% if (e.isDefault) { %><span class="badge text-bg-primary">default</span><% } %>
+                  <% if (!e.ok) { %><span class="badge text-bg-danger" title="<%= e.error %>">alamat tidak valid</span>
+                  <% } else if (h.coolingDown) { %><span class="badge text-bg-danger" title="<%= h.error || '' %>">gagal · istirahat <%= Math.ceil(h.cooldownLeftMs / 60000) %> mnt</span>
+                  <% } else if (h.okAt) { %><span class="badge text-bg-success">OK</span>
+                  <% } else if (h.failedAt) { %><span class="badge text-bg-warning" title="<%= h.error || '' %>">pernah gagal</span>
+                  <% } else { %><span class="badge bg-secondary-subtle text-secondary-emphasis">belum dipakai</span><% } %>
+                </div>
+                <div class="small text-body-secondary mt-1 text-break"><code><%= e.display %></code><% if (e.login) { %> · login <code><%= e.login %></code><% } %></div>
+                <div class="small text-body-secondary">Dipakai: <%= e.usedBy.length ? e.usedBy.join(', ') : '—' %></div>
+                <% if (h.error && (h.coolingDown || !h.okAt || h.failedAt > h.okAt)) { %><div class="small text-danger-emphasis text-break"><i class="bi bi-exclamation-octagon me-1"></i><%= h.error %></div><% } %>
+              </div>
+              <div class="d-flex gap-2 flex-shrink-0">
+                <form method="POST" action="/admin/proxies/<%= e.id %>/test" data-busy><button type="submit" class="btn btn-sm btn-outline-info" title="Buka <%= px.testUrl %> lewat proxy ini"><i class="bi bi-activity me-1"></i>Test</button></form>
+                <a href="/admin/proxies/<%= e.id %>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
+                <form method="POST" action="/admin/proxies/<%= e.id %>/delete" data-confirm="Hapus proxy &quot;<%= e.name %>&quot;?"><button type="submit" class="btn btn-sm btn-outline-danger" title="Hapus" aria-label="Hapus <%= e.name %>"><i class="bi bi-trash"></i></button></form>
+              </div>
+            </div>
+          </div>
+          <% }) %>
+        </div>
+        <small class="form-hint d-block mt-2">Status sejak server terakhir start — dari crawl, <em>Cek Lightpanda</em> per website, dan tombol Test (membuka <code><%= px.testUrl %></code> lewat proxy, persis seperti crawl).</small>
+        <% } %>
+      </div>
+    </section>
+  </div>
+
   <!-- WireGuard configs: the second kind of website proxy -->
   <div class="col-12">
     <section class="card" id="wireguard">
@@ -108,7 +191,7 @@
           <div class="alert alert-warning py-2 small"><i class="bi bi-exclamation-triangle me-1"></i><code>wireproxy</code> tidak ditemukan — config tetap bisa disimpan, tapi website yang memakai WireGuard gagal crawl sampai wireproxy terpasang (lihat README) atau <code>WIREPROXY_EXECUTABLE_PATH</code> diset.</div>
         <% } %>
         <% if (wgError) { %><div class="alert alert-danger py-2 small"><%= wgError %></div><% } %>
-        <p class="small text-body-secondary">Config WireGuard dari penyedia VPN (file <code>.conf</code>). Di form website, pilih jenis proxy <em>WireGuard</em> lalu centang config yang dipakai — lebih dari satu dirotasi seperti proxy. Tiap config jalan sebagai satu proses kecil (±12 MB) hanya saat dipakai, dipakai bersama semua website, dan berhenti sendiri setelah <%= wg.idleMinutes %> menit tidak dipakai. Tidak butuh root atau NET_ADMIN.</p>
+        <p class="small text-body-secondary">Config WireGuard dari penyedia VPN (file <code>.conf</code>). Pilih config di menu <em>Proxy / VPN</em> form website, atau jadikan <a href="#proxy">default global</a> — lebih dari satu dirotasi seperti proxy, dan boleh dicampur dengan proxy biasa. Tiap config jalan sebagai satu proses kecil (±12 MB) hanya saat dipakai, dipakai bersama semua website, dan berhenti sendiri setelah <%= wg.idleMinutes %> menit tidak dipakai. Tidak butuh root atau NET_ADMIN.</p>
 
         <% if (wg.configs.length) { %>
         <div class="list-group mb-4" id="wgList">
@@ -134,7 +217,7 @@
                 <% c.warnings.forEach(note => { %><div class="small text-warning-emphasis"><i class="bi bi-exclamation-triangle me-1"></i><%= note %></div><% }) %>
               </div>
               <div class="d-flex gap-2 flex-shrink-0">
-                <form method="POST" action="/admin/wireguard/<%= c.id %>/test"><button type="submit" class="btn btn-sm btn-outline-info"><i class="bi bi-activity me-1"></i>Test</button></form>
+                <form method="POST" action="/admin/wireguard/<%= c.id %>/test" data-busy><button type="submit" class="btn btn-sm btn-outline-info"><i class="bi bi-activity me-1"></i>Test</button></form>
                 <a href="/admin/wireguard/<%= c.id %>" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
                 <form method="POST" action="/admin/wireguard/<%= c.id %>/delete" data-confirm="Hapus config WireGuard &quot;<%= c.name %>&quot;?"><button type="submit" class="btn btn-sm btn-outline-danger" title="Hapus" aria-label="Hapus <%= c.name %>"><i class="bi bi-trash"></i></button></form>
               </div>

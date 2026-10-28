@@ -3,6 +3,7 @@ const net = require('net');
 const puppeteer = require('puppeteer-core');
 const lightpanda = require('./lightpanda');
 const wireguard = require('./wireguard');
+const refs = require('./proxy-refs');
 
 // Only used by fetchPageSimple (plain HTTP mode). Lightpanda sends its own
 // "Lightpanda/1.0" User-Agent and refuses any value containing "Mozilla".
@@ -92,6 +93,20 @@ function parseProxy(proxy) {
   };
 }
 
+/** An entry of Settings → Proxy, parsed; errors count as the proxy failing (try the next). */
+function settingsProxy(name) {
+  const row = db.getProxyByName(name);
+  const fail = (msg) => Object.assign(new Error(`Proxy "${name}": ${msg}`), { proxyFailed: true });
+  if (!row) throw fail('not found — add it under Settings → Proxy, or pick another one for this website');
+  let info;
+  try {
+    info = parseProxy(row.url);
+  } catch (err) {
+    throw fail(err.message);
+  }
+  return { ...info, display: `${name} (${info.display})` };
+}
+
 /** The zone if Intl knows it — Lightpanda silently ignores one it doesn't. */
 function validTimezone(timezone) {
   if (!timezone) return null;
@@ -138,11 +153,14 @@ async function proxyCidrs(proxyInfo) {
  */
 async function getBrowser(proxy, { timezone = null, blockImages = false, crossOriginFetch = false, waitTimeout = 0 } = {}) {
   // A WireGuard config is reached through its local wireproxy SOCKS5 server (started on
-  // first use, shared, kept while any crawl holds it)
-  const tunnel = wireguard.isEntry(proxy) ? await wireguard.acquire(wireguard.entryName(proxy)) : null;
+  // first use, shared, kept while any crawl holds it); a Settings proxy by its address
+  const ref = refs.parseRef(proxy);
+  const tunnel = ref && ref.type === 'wireguard' ? await wireguard.acquire(ref.name) : null;
   let lp;
   try {
-    const proxyInfo = tunnel ? { server: tunnel.server, display: tunnel.display, hostname: '127.0.0.1' } : parseProxy(proxy);
+    const proxyInfo = tunnel
+      ? { server: tunnel.server, display: tunnel.display, hostname: '127.0.0.1' }
+      : ref ? settingsProxy(ref.name) : parseProxy(proxy);
 
     // Stylesheets so computed styles (visibility checks, CSS-driven scripts) are real
     const loadResources = blockImages ? ['stylesheet'] : ['stylesheet', 'image'];

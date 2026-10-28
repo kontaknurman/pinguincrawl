@@ -1,8 +1,8 @@
 /**
  * Proxy rotation per website.
  *
- * A website's proxy field holds one proxy per line; every crawl attempt asks pick() for
- * one of them:
+ * A website picks one or more entries of Settings → Proxy / WireGuard (or follows the global
+ * default — see selectionFor); every crawl attempt asks pick() for one of them:
  *   round_robin  the next one in the list, crawl after crawl
  *   random       any of them
  *   failover     always the first; the next ones only while it is failing
@@ -15,27 +15,42 @@
  */
 
 const { parseProxy } = require('./browser');
-const wireguard = require('./wireguard');
+const db = require('../models/database');
+const refs = require('./proxy-refs');
 
 const ROTATIONS = ['round_robin', 'random', 'failover'];
 const COOLDOWN_MS = 5 * 60 * 1000;
 
 const cursors = new Map();  // website key -> index of the next round_robin proxy
-// proxy -> { okAt, failedAt, failures, error }. Keyed by the full proxy, login included:
-// rotating residential gateways hand out one host:port with a different user per session,
-// and one dead session must not rest all the others. Never leaves this module.
+// entry -> { okAt, failedAt, failures, error }, per Settings entry: rotating residential
+// gateways hand out one host:port with a different user per session, so each login is its
+// own entry and one dead session must not rest the others. Never leaves this module.
 const health = new Map();
 
 /**
- * What a website crawls through: its proxy list, or — with proxy type "wireguard" — its
- * selected WireGuard configs as "wireguard:<name>" entries. Both rotate the same way.
+ * What a website crawls through: { entries, rotation, source }. `entries` are refs
+ * ("proxy:<name>", "wireguard:<name>"), resolved when a browser starts; `source` says whether
+ * they are the website's own choice, the global default, or none at all.
  */
-function websiteProxies(website) {
-  if (!website) return [];
-  return website.proxy_type === 'wireguard' ? wireguard.websiteEntries(website) : parseProxyList(website.proxy);
+function selectionFor(website) {
+  const rotation = (website && website.proxy_rotation) || 'round_robin';
+  // proxy_refs NULL: a website whose old proxy list couldn't be moved to Settings yet (see
+  // convertLegacyProxies) keeps crawling through that list, as before the upgrade
+  if (website && website.proxy_refs == null) {
+    const wg = website.proxy_type === 'wireguard' ? parseProxyList(website.wireguard).map(refs.wireguardRef) : [];
+    const own = wg.length ? wg : parseProxyList(website.proxy);
+    if (own.length) return { entries: own, rotation, source: 'website' };
+  }
+  const choice = String((website && website.proxy_refs) || refs.DEFAULT).trim();
+  if (choice === refs.NONE) return { entries: [], rotation: 'round_robin', source: 'none' };
+  if (choice === refs.DEFAULT) {
+    const d = db.getDefaultProxy();
+    return { entries: d.refs, rotation: d.rotation, source: 'default' };
+  }
+  return { entries: refs.refList(choice).filter((r) => refs.parseRef(r)), rotation, source: 'website' };
 }
 
-/** The proxy field as a list: one per line, blank lines and # comments ignored. */
+/** A proxy list as text: one per line, blank lines and # comments ignored. */
 function parseProxyList(text) {
   return String(text || '')
     .split(/\r?\n/)
@@ -43,24 +58,9 @@ function parseProxyList(text) {
     .filter((line) => line && !line.startsWith('#'));
 }
 
-/**
- * Validate a submitted proxy field. Returns the normalized text (one proxy per line);
- * throws naming the offending line.
- */
-function normalizeProxyList(text) {
-  const lines = parseProxyList(text);
-  lines.forEach((line, i) => {
-    try {
-      parseProxy(line);
-    } catch (err) {
-      throw new Error(`Proxy line ${i + 1}: ${err.message}`);
-    }
-  });
-  return lines.join('\n');
-}
-
 function displayOf(proxy) {
-  if (wireguard.isEntry(proxy)) return `wireguard ${wireguard.entryName(proxy)}`;
+  const ref = refs.parseRef(proxy);
+  if (ref) return ref.type === 'wireguard' ? `wireguard ${ref.name}` : ref.name;
   try {
     return parseProxy(proxy).display;
   } catch {
@@ -69,7 +69,7 @@ function displayOf(proxy) {
 }
 
 function keyOf(proxy) {
-  if (wireguard.isEntry(proxy)) return proxy;
+  if (refs.parseRef(proxy)) return proxy;
   try {
     return parseProxy(proxy).server;
   } catch {
@@ -122,6 +122,11 @@ function reportFailure(proxy, message) {
   health.set(k, { ...h, failedAt: Date.now(), failures: (h.failures || 0) + 1, error: String(message || '').slice(0, 300) });
 }
 
+/** An entry that changed (new address, config or name): what it did before no longer counts. */
+function forget(proxy) {
+  health.delete(keyOf(proxy));
+}
+
 /** Per-proxy state for the admin UI — displays only, never credentials. */
 function status(list) {
   const now = Date.now();
@@ -142,12 +147,12 @@ function status(list) {
 module.exports = {
   ROTATIONS,
   COOLDOWN_MS,
-  websiteProxies,
+  selectionFor,
   parseProxyList,
-  normalizeProxyList,
   displayOf,
   pick,
   reportSuccess,
   reportFailure,
+  forget,
   status,
 };

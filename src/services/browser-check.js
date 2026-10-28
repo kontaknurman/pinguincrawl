@@ -12,15 +12,20 @@
  */
 
 const http = require('http');
+const net = require('net');
 const db = require('../models/database');
 const lightpanda = require('./lightpanda');
 const proxyPool = require('./proxy-pool');
+const refs = require('./proxy-refs');
 const { getBrowser, createPage } = require('./browser');
 const { detectCaptcha } = require('./captcha-detector');
 
 const SITE_TIMEOUT_MS = 30000;
 const MAX_PROXIES_CHECKED = 10;
 const PROXY_CHECK_CONCURRENCY = 3;
+// What Settings → Proxy → Test opens. An address echo service (one that answers with
+// nothing but the IP, like https://api.ipify.org/) also shows the proxy's exit IP.
+const PROXY_TEST_URL = process.env.PROXY_TEST_URL || 'https://example.com/';
 
 /**
  * Serve a throwaway page on 127.0.0.1 so we see the request headers the browser really
@@ -66,14 +71,14 @@ async function mapLimit(items, limit, fn) {
 }
 
 /** Open a URL the way a crawl would, through one proxy (or none). */
-async function openSite(url, proxy, { userAgent, customHeaders, cookies, localStorage, timezone }) {
+async function openSite(url, proxy, { userAgent, customHeaders, cookies, localStorage, timezone, readText = false }) {
   const browser = await getBrowser(proxy, { timezone, waitTimeout: SITE_TIMEOUT_MS });
   try {
     const page = await createPage(browser, userAgent, customHeaders, cookies, localStorage);
     const started = Date.now();
     const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: SITE_TIMEOUT_MS });
     const status = resp ? resp.status() : null;
-    if (status === 407) throw new Error('Proxy rejected the credentials (HTTP 407)');
+    if (status === 407) throw Object.assign(new Error('Proxy rejected the credentials (HTTP 407)'), { proxyFailed: true });
     const challenge = await detectCaptcha(page);
     return {
       url: page.url(),
@@ -81,9 +86,31 @@ async function openSite(url, proxy, { userAgent, customHeaders, cookies, localSt
       title: await page.title(),
       loadMs: Date.now() - started,
       challenge: challenge.detected ? { type: challenge.type, reason: challenge.reason } : null,
+      ...(readText && { text: String(await page.evaluate(() => (document.body ? document.body.textContent : '')) || '').trim().slice(0, 200) }),
     };
   } finally {
     await browser.close();
+  }
+}
+
+/**
+ * Settings → Proxy → Test: open PROXY_TEST_URL through one entry ("proxy:<name>") the way a
+ * crawl would. Counts as real use for the rotation's health, like the website check.
+ * Returns { url, status, title, loadMs, ip } — ip when the page was just an address.
+ */
+async function testProxy(ref) {
+  try {
+    const r = await openSite(PROXY_TEST_URL, ref, { readText: true });
+    if (r.status === null || r.status >= 400) {
+      // The proxy did carry the request: an error page is about the test URL, so the proxy
+      // isn't rested for it
+      throw Object.assign(new Error(`${PROXY_TEST_URL} answered HTTP ${r.status === null ? '?' : r.status} through the proxy`), { answered: true });
+    }
+    proxyPool.reportSuccess(ref);
+    return { url: PROXY_TEST_URL, status: r.status, title: r.title, loadMs: r.loadMs, ip: net.isIP(r.text) ? r.text : null };
+  } catch (err) {
+    if (!err.answered) proxyPool.reportFailure(ref, err.message);
+    throw err;
   }
 }
 
@@ -167,12 +194,12 @@ async function runBrowserCheck(websiteName) {
     }
   }
 
-  // 2. The website itself, exactly as a crawl would open it — through each of its proxies
-  //    (or WireGuard configs)
+  // 2. The website itself, exactly as a crawl would open it — through each proxy / WireGuard
+  //    config it uses (its own choice, or the global default)
   if (website && p) {
-    const proxies = proxyPool.websiteProxies(website);
-    const isWg = website.proxy_type === 'wireguard';
+    const { entries: proxies, source } = proxyPool.selectionFor(website);
     const targets = proxies.length ? proxies.slice(0, MAX_PROXIES_CHECKED) : [null];
+    const isWg = (i) => (refs.parseRef(targets[i]) || {}).type === 'wireguard';
     const pageSetup = { userAgent, customHeaders, cookies: parseJson(website.cookies, []), localStorage: parseJson(website.local_storage, {}), timezone };
 
     raw.site = await mapLimit(targets, PROXY_CHECK_CONCURRENCY, async (proxy) => {
@@ -188,18 +215,20 @@ async function runBrowserCheck(websiteName) {
     });
 
     raw.site.forEach((r, i) => {
-      const name = proxies.length ? `Website lewat ${isWg ? 'WireGuard' : 'proxy'} ${i + 1} (${r.proxy})` : 'Website bisa dibuka';
+      const name = proxies.length
+        ? `Website lewat ${isWg(i) ? 'WireGuard' : 'proxy'} ${i + 1} (${r.proxy})${source === 'default' ? ' — default global' : ''}`
+        : 'Website bisa dibuka';
       if (r.error) {
         add(name, false, r.error, !proxies.length
           ? `Gagal membuka ${website.base_url}. Cek URL-nya.`
-          : isWg
+          : isWg(i)
             ? 'Tunnel ini tidak bisa dipakai — cek config-nya di Settings → WireGuard (Endpoint, kunci), atau server VPN-nya sedang mati. Saat crawl, config yang gagal otomatis dilewati.'
-            : 'Proxy ini tidak bisa dipakai — cek alamat, port dan user/password-nya, atau proxy-nya sedang mati. Saat crawl, proxy yang gagal otomatis dilewati.');
+            : 'Proxy ini tidak bisa dipakai — cek alamat, port dan user/password-nya di Settings → Proxy, atau proxy-nya sedang mati. Saat crawl, proxy yang gagal otomatis dilewati.');
         return;
       }
       add(name, r.status !== null && r.status < 400,
         `HTTP ${r.status === null ? '?' : r.status} dalam ${r.loadMs} ms — "${r.title}"${r.challenge ? ` — challenge ${r.challenge.type}` : ''}`,
-        `Base URL menjawab HTTP ${r.status}. Cek URL-nya, atau situs menolak Lightpanda / IP ${proxies.length ? (isWg ? 'VPN ini' : 'proxy ini') : 'server'}.`);
+        `Base URL menjawab HTTP ${r.status}. Cek URL-nya, atau situs menolak Lightpanda / IP ${proxies.length ? (isWg(i) ? 'VPN ini' : 'proxy ini') : 'server'}.`);
     });
     if (proxies.length > MAX_PROXIES_CHECKED) {
       add('Proxy lain', true, `${proxies.length - MAX_PROXIES_CHECKED} proxy berikutnya tidak dicek (maks. ${MAX_PROXIES_CHECKED})`);
@@ -217,8 +246,9 @@ async function runBrowserCheck(websiteName) {
   }
 
   const problems = checks.filter(c => !c.ok);
+  const selection = website ? proxyPool.selectionFor(website) : null;
   return {
-    website: website ? { name: website.name, baseUrl: website.base_url, userAgentSet: !!website.user_agent, proxyType: website.proxy_type || 'proxy', proxies: proxyPool.websiteProxies(website).length, proxyRotation: website.proxy_rotation || 'round_robin' } : null,
+    website: website ? { name: website.name, baseUrl: website.base_url, userAgentSet: !!website.user_agent, proxySource: selection.source, proxies: selection.entries.length, proxyRotation: selection.rotation } : null,
     status: problems.length === 0 ? 'clean' : 'issues',
     summary: problems.length === 0
       ? 'Lightpanda siap dipakai untuk crawl.'
@@ -229,4 +259,4 @@ async function runBrowserCheck(websiteName) {
   };
 }
 
-module.exports = { runBrowserCheck };
+module.exports = { runBrowserCheck, testProxy, PROXY_TEST_URL };

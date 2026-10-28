@@ -239,3 +239,54 @@ dipakai dari sumber yang di input di setting. pastikan ringan dan berfungsi"
   tambahan, `/dev/shm` bersih).
 - Suite lain diulang: E2E **63/63**, rotasi **21/21**, migrasi **11/11**, backup per website **46/46**,
   auth **95/95**, body aneh **12/12**, UI **47/47**, UI auth **46/46**, UI backup **36/36**.
+
+---
+
+# Lanjutan: Settings → Proxy (daftar global + default) dan pilihan proxy per website
+
+## Permintaan (user)
+"buat juga settingan global untuk proxy, dan pilih proxy per admin jadinya bisa milih seperti select,
+jadi lebih proper dan rapi" — lalu: "jadi nanti per website bisa select proxy/vpn yang dimau".
+Ditafsirkan: daftar proxy disimpan sekali di Settings (seperti config WireGuard) + default global; tiap
+website memilih lewat select (proxy maupun VPN).
+
+## Desain
+- Tabel `proxies` (nama unik + alamat). Website menyimpan pilihannya di `websites.proxy_refs`: `default`,
+  `none`, atau ref per baris `proxy:<nama>` / `wireguard:<nama>` (urutan = prioritas Cadangan).
+  Default global di settings `proxy_default` + `proxy_default_rotation`.
+- Ref memakai nama, bukan isi: ganti alamat/login cukup di satu tempat; ganti nama diteruskan ke semua
+  website dan default; hapus ditolak selama masih dipakai.
+- Migrasi otomatis (`convertLegacyProxies`): tiap baris proxy lama jadi entri (satu per baris yang
+  sama, dipakai bersama), urutan + rotasi website tetap, pilihan WireGuard pindah jadi ref; website
+  tanpa proxy → `default` (awalnya tanpa proxy). Gagal konversi → crawl tetap lewat daftar lama
+  (`selectionFor`), tidak pernah diam-diam jadi koneksi langsung.
+- Backup per website membawa entri proxy yang dipilih (alamat + login); restore memakai ulang alamat
+  yang sama, nama bentrok → `nama-2`. Backup lama / crawlkomik dikonversi saat restore.
+
+## Plan
+- [x] 1. Model: `proxies`, `proxy_refs`, default global, konversi, rename/usage, import dari backup
+- [x] 2. Crawl: `selectionFor` (website / default / none / fallback lama), resolve ref di `getBrowser`
+- [x] 3. Admin: Settings → Proxy (default, tambah massal, Test lewat Lightpanda, Edit, Hapus), select
+       picker di form website (baris tambahan + rotasi), badge dashboard, Cek Lightpanda per entri
+- [x] 4. Backup/restore per website, README
+- [x] 5. Verifikasi
+
+## Review
+- E2E daftar proxy **70/70** (app asli + Lightpanda asli + proxy HTTP/SOCKS5 lokal): database versi
+  sebelumnya (dibuat kode versi itu sendiri) → 6 entri dari daftar lama (baris sama dipakai bersama,
+  komentar dibuang, sesi `host:port:user:pass` dengan host-port sama → `-2`, `-3`), urutan + rotasi tetap,
+  pilihan WireGuard pindah, restart tanpa konversi ulang; crawl Bergiliran A,B,C / Cadangan lewat entri
+  hasil konversi; default global (D,B,D,B), `Tanpa proxy` dan Force OFF langsung, Force ON lewat default;
+  validasi (entri tidak ada, keyword di baris tambahan, entri hilang yang sudah tersimpan tetap boleh
+  disimpan); tambah massal (baris salah → nomor baris, duplikat beda penulisan ditolak); edit alamat →
+  crawl ikut, ganti nama ikut ke website + default; Test lewat Lightpanda (OK / mati / alamat rusak);
+  hapus ditolak selama dipakai; backup per website berisi entri yang dipilih saja → restore di server
+  lain (nama bentrok → `-2`, alamat sama dipakai ulang), restore backup lama + full restore database lama
+  dikonversi; config WireGuard yang tidak ada → crawl gagal jelas, tidak pernah langsung.
+- UI (Playwright, 1440px + 390px) **70/70**: tambah massal + prefix, Test, default dengan 2 baris +
+  Cadangan, select di form website (baris baru mulai dari entri yang belum dipilih, nomor urut, hapus
+  baris, `Tanpa proxy` menyembunyikan baris lalu kembali), tersimpan sesuai urutan, crawl lewat nomor 1,
+  badge dashboard, edit/ganti nama, hapus; tanpa overflow / error JS.
+- Suite lain disesuaikan ke model baru lalu diulang: E2E **64/64**, rotasi **22/22**, migrasi crawlkomik
+  **12/12**, backup per website **47/47**, UI **51/51**, UI backup **36/36**, WireGuard **51/51**,
+  UI WireGuard **38/38**, Docker WireGuard **7/7**, auth **95/95**, body aneh **12/12**, UI auth **46/46**.

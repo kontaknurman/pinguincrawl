@@ -1,0 +1,44 @@
+<% const f = typeof form !== 'undefined' && form ? form : { name: proxy.name, url: proxy.url }; %>
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small">
+    <li class="breadcrumb-item"><a href="/admin/settings#proxy">Settings</a></li>
+    <li class="breadcrumb-item"><a href="/admin/settings#proxy">Proxy</a></li>
+    <li class="breadcrumb-item active text-break" aria-current="page"><%= proxy.name %></li>
+  </ol>
+</nav>
+
+<div class="page-header">
+  <div class="min-w-0">
+    <h1 class="text-break"><i class="bi bi-hdd-network me-2"></i><%= proxy.name %></h1>
+    <p class="page-subtitle">
+      <code><%= info.display %></code><% if (info.login) { %> · login <code><%= info.login %></code><% } %>
+      · Dipakai: <%= usedBy.length ? usedBy.join(', ') : '—' %>
+    </p>
+  </div>
+</div>
+
+<% if (error) { %>
+  <div class="alert alert-danger py-2"><i class="bi bi-exclamation-octagon me-1"></i><%= error %></div>
+<% } %>
+<% if (health.coolingDown || (health.failedAt && (!health.okAt || health.failedAt > health.okAt))) { %>
+  <div class="alert alert-warning py-2 small text-break"><i class="bi bi-exclamation-triangle me-1"></i>Terakhir gagal: <%= health.error || '(tanpa pesan)' %></div>
+<% } %>
+
+<section class="card">
+  <div class="card-body">
+    <form method="POST" action="/admin/proxies/<%= proxy.id %>">
+      <div class="mb-3">
+        <label class="form-label" for="proxy_name">Nama</label>
+        <input type="text" class="form-control font-monospace" id="proxy_name" name="name" value="<%= f.name %>" required autocapitalize="none" spellcheck="false" autocomplete="off">
+        <small class="form-hint">Huruf kecil, angka, titik, strip, underscore. Ganti nama ikut diganti di website (dan default global) yang memakainya.</small>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="proxy_url">Alamat</label>
+        <input type="text" class="form-control font-monospace" id="proxy_url" name="url" value="<%= f.url %>" required autocapitalize="none" spellcheck="false" autocomplete="off">
+        <small class="form-hint"><code>http://user:pass@host:port</code>, <code>https://…</code>, <code>socks5://…</code>, <code>socks4://…</code>, <code>host:port</code> atau <code>host:port:user:pass</code>. Berisi password proxy — jangan dibagikan. Website yang memakainya langsung ikut alamat baru di crawl berikutnya.</small>
+      </div>
+      <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>Save</button>
+      <a href="/admin/settings#proxy" class="btn btn-outline-secondary">Cancel</a>
+    </form>
+  </div>
+</section>

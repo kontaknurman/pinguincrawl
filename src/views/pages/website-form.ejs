@@ -10,8 +10,6 @@
   const _backupError = typeof backup_error !== 'undefined' ? backup_error : null;
   const _restoreError = typeof restore_error !== 'undefined' ? restore_error : null;
   const _restoreName = typeof restoreName !== 'undefined' ? restoreName : '';
-  const proxyType = w.proxy_type === 'wireguard' ? 'wireguard' : 'proxy';
-  const wgSelected = new Set(String(w.wireguard || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean));
   let cookieInfo = null;
   try {
     const list = JSON.parse(w.cookies || '[]');
@@ -77,62 +75,25 @@
         <div class="card-header"><h2 class="section-title"><i class="bi bi-shield-lock me-1"></i>Jaringan &amp; identitas browser</h2></div>
         <div class="card-body">
           <div class="mb-3">
-            <span class="form-label d-block">Jenis proxy</span>
-            <div class="btn-group" role="group" aria-label="Jenis proxy">
-              <input type="radio" class="btn-check" name="proxy_type" id="pt_proxy" value="proxy" autocomplete="off" <%= proxyType === 'wireguard' ? '' : 'checked' %>>
-              <label class="btn btn-sm btn-outline-secondary" for="pt_proxy"><i class="bi bi-hdd-network me-1"></i>Proxy (HTTP/SOCKS)</label>
-              <input type="radio" class="btn-check" name="proxy_type" id="pt_wireguard" value="wireguard" autocomplete="off" <%= proxyType === 'wireguard' ? 'checked' : '' %>>
-              <label class="btn btn-sm btn-outline-secondary" for="pt_wireguard"><i class="bi bi-shield-shaded me-1"></i>WireGuard (VPN)</label>
-            </div>
-          </div>
-          <div class="mb-3" data-proxy-type="proxy">
-            <label class="form-label" for="proxy">Proxy <small class="text-body-secondary">(opsional, satu per baris)</small></label>
-            <textarea id="proxy" name="proxy" class="form-control font-monospace" rows="3" placeholder="http://user:pass@host:port&#10;socks5://user:pass@host:port&#10;host:port:user:pass" autocapitalize="none" spellcheck="false" autocomplete="off"><%= w.proxy || '' %></textarea>
-            <small class="form-hint">Format: <code>http://user:pass@host:port</code>, <code>socks5://…</code>, <code>host:port</code> atau <code>host:port:user:pass</code>. Lebih dari satu baris = dirotasi; proxy yang gagal otomatis diganti proxy berikutnya dan diistirahatkan 5 menit.</small>
-          </div>
-          <div class="mb-3" data-proxy-type="wireguard">
-            <span class="form-label d-block">Config WireGuard <small class="text-body-secondary">(dari Settings → WireGuard)</small></span>
-            <% if (!wireguardConfigs.length) { %>
-              <div class="alert alert-secondary py-2 small mb-0">Belum ada config WireGuard. <a href="/admin/settings#wireguard">Tambahkan di Settings → WireGuard</a> (tempel config atau upload file <code>.conf</code>), lalu pilih di sini.</div>
-            <% } else { %>
-              <div class="list-group small" id="wgChoices">
-                <% wireguardConfigs.forEach(c => { %>
-                <label class="list-group-item d-flex gap-2 align-items-start">
-                  <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" name="wireguard" value="<%= c.name %>" <%= wgSelected.has(c.name) ? 'checked' : '' %>>
-                  <span class="min-w-0">
-                    <span class="font-monospace fw-semibold text-break"><%= c.name %></span>
-                    <span class="d-block text-body-secondary text-break"><%= c.ok ? c.endpoint : c.error %></span>
-                  </span>
-                </label>
-                <% }) %>
-              </div>
-              <% const missing = [...wgSelected].filter(n => !wireguardConfigs.some(c => c.name === n)); if (missing.length) { %>
-                <div class="alert alert-warning py-1 px-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle me-1"></i>Tidak ada lagi di Settings: <%= missing.join(', ') %> — dilewati saat crawl.</div>
-              <% } %>
-              <small class="form-hint">Lebih dari satu = dirotasi seperti proxy; config yang gagal handshake dilewati dan diistirahatkan 5 menit. Mode <em>Cadangan</em> memakai urutan daftar ini (urut nama) — beri awalan angka pada nama config (mis. <code>1-sg</code>, <code>2-jp</code>) untuk mengatur prioritas. Tunnel dinyalakan saat crawl pertama dan dipakai bersama website lain.</small>
+            <%- include('../partials/proxy-picker', { picker }) %>
+            <small class="form-hint">Dipilih dari <a href="/admin/settings#proxy">Settings → Proxy</a> (HTTP/HTTPS/SOCKS) dan <a href="/admin/settings#wireguard">Settings → WireGuard</a> (VPN). <em>Default global</em> mengikuti pengaturan default di Settings → Proxy.</small>
+            <% if (legacyProxy) { %>
+              <div class="alert alert-warning py-1 px-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle me-1"></i>Daftar proxy lama website ini belum berhasil dipindah ke Settings → Proxy (lihat log server) — crawl masih memakai daftar lama itu. Menyimpan form ini menggantinya dengan pilihan di atas.</div>
             <% } %>
-            <% if (!wireproxyInstalled) { %>
+            <% if (wireproxyMissing) { %>
               <div class="alert alert-warning py-1 px-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle me-1"></i><code>wireproxy</code> belum terpasang di server — crawl lewat WireGuard akan gagal (lihat README).</div>
             <% } %>
           </div>
-          <div class="mb-3">
-            <label class="form-label" for="proxy_rotation">Rotasi proxy</label>
-            <select id="proxy_rotation" name="proxy_rotation" class="form-select">
-              <% [['round_robin', 'Bergiliran — tiap crawl pakai proxy berikutnya'], ['random', 'Acak — tiap crawl pilih proxy secara acak'], ['failover', 'Cadangan — selalu proxy pertama, sisanya hanya saat itu gagal']].forEach(([val, label]) => { %>
-                <option value="<%= val %>" <%= (w.proxy_rotation || 'round_robin') === val ? 'selected' : '' %>><%= label %></option>
-              <% }) %>
-            </select>
-          </div>
-          <% if (isEdit && typeof proxyStatus !== 'undefined' && proxyStatus.length) { %>
+          <% if (isEdit && proxyStatus.length) { %>
           <div class="mb-3">
             <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
-              <span class="form-label mb-0">Status proxy</span>
-              <a class="small" href="/admin/browser-check?website=<%= encodeURIComponent(w.name) %>" target="_blank" rel="noopener"><i class="bi bi-activity me-1"></i>Cek semua proxy</a>
+              <span class="form-label mb-0">Status proxy<%= proxySource === 'default' ? ' (default global)' : '' %></span>
+              <a class="small" href="/admin/browser-check?website=<%= encodeURIComponent(w.name) %>" target="_blank" rel="noopener"><i class="bi bi-activity me-1"></i>Cek semua</a>
             </div>
             <ul class="list-group list-group-sm small">
               <% proxyStatus.forEach((s, i) => { %>
               <li class="list-group-item d-flex justify-content-between gap-2 py-1 px-2">
-                <code class="text-break-all"><%= i + 1 %>. <%= s.display %></code>
+                <span class="text-break-all"><i class="bi <%= s.type === 'wireguard' ? 'bi-shield-shaded' : 'bi-hdd-network' %> me-1 text-body-secondary"></i><code><%= i + 1 %>. <%= s.display %></code></span>
                 <span class="text-nowrap">
                   <% if (s.coolingDown) { %><span class="badge text-bg-danger" title="<%= s.error || '' %>">gagal · istirahat <%= Math.ceil(s.cooldownLeftMs / 60000) %> mnt</span>
                   <% } else if (s.okAt) { %><span class="badge text-bg-success">OK</span>
@@ -345,7 +306,7 @@
     <div class="row g-4">
       <div class="col-lg-6">
         <h3 class="h6">Download backup</h3>
-        <p class="small text-body-secondary">File SQLite <code>.db</code> — format sama dengan backup di Settings — berisi website ini saja: pengaturan (termasuk proxy dan cookie), page config, dan custom page type. Akun admin, API key, log, cache gambar, dan isi config WireGuard (hanya namanya) tidak ikut.</p>
+        <p class="small text-body-secondary">File SQLite <code>.db</code> — format sama dengan backup di Settings — berisi website ini saja: pengaturan (termasuk cookie dan proxy yang dipilihnya, lengkap dengan alamat + login), page config, dan custom page type. Akun admin, API key, log, cache gambar, dan isi config WireGuard (hanya namanya) tidak ikut; pilihan <em>Default global</em> mengikuti default server tempat restore.</p>
         <a href="/admin/websites/<%= w.id %>/backup" class="btn btn-outline-info"><i class="bi bi-download me-1"></i>Download Backup</a>
       </div>
       <div class="col-lg-6">
@@ -378,15 +339,6 @@
   const toggle = document.getElementById('imageProxy');
   const group = document.getElementById('cacheMethodGroup');
   if (toggle && group) toggle.addEventListener('change', () => group.classList.toggle('d-none', !toggle.checked));
-  // Show the proxy list or the WireGuard choices, whichever the type says (both are saved)
-  const typeGroups = document.querySelectorAll('[data-proxy-type]');
-  const applyProxyType = () => {
-    const checked = document.querySelector('input[name="proxy_type"]:checked');
-    const type = checked ? checked.value : 'proxy';
-    typeGroups.forEach((g) => g.classList.toggle('d-none', g.dataset.proxyType !== type));
-  };
-  document.querySelectorAll('input[name="proxy_type"]').forEach((r) => r.addEventListener('change', applyProxyType));
-  applyProxyType();
   <% if (_backupError || _restoreError) { %>
   // The backup forms sit at the bottom of a long page — bring the error into view
   const target = document.getElementById(<%- JSON.stringify(_backupError ? 'backup' : 'restore') %>);

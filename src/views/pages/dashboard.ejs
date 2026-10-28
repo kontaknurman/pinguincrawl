@@ -3,7 +3,6 @@
   const bs = typeof browserStatus !== 'undefined' && browserStatus ? browserStatus : { active: 0, queued: 0, max: 3 };
   const dataFs = filesystems.find(f => f.keys.includes('data')) || filesystems[0];
   const lowFs = filesystems.find(f => f.low);
-  const rotationLabels = { round_robin: 'bergiliran', random: 'acak', failover: 'cadangan' };
   const exampleSite = websites.length ? websites[0].name : 'mywebsite';
 %>
 <div class="page-header">
@@ -90,7 +89,7 @@
               <a href="/admin/websites/<%= w.id %>" class="fw-semibold text-decoration-none"><%= w.name %></a>
               <% if (w.active) { %><span class="badge rounded-pill text-bg-success">Active</span><% } else { %><span class="badge rounded-pill text-bg-secondary">Inactive</span><% } %>
               <% if (w.image_proxy) { %><span class="badge rounded-pill text-bg-info" title="Image cache method: <%= w.image_cache_method || 'browser' %>"><i class="bi bi-images me-1"></i>Img Proxy</span><% } %>
-              <% const px = proxyLabels[w.id] || []; if (px.length) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis" title="<%= px.join('\n') %><%= px.length > 1 ? '\nrotasi: ' + (rotationLabels[w.proxy_rotation] || rotationLabels.round_robin) : '' %>"><i class="bi <%= w.proxy_type === 'wireguard' ? 'bi-shield-shaded' : 'bi-shield-lock' %> me-1"></i><%= w.proxy_type === 'wireguard' ? 'WireGuard' : 'Proxy' %><%= px.length > 1 ? ' ×' + px.length : '' %></span><% } %>
+              <% const pb = proxyBadges[w.id]; if (pb) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis" title="<%= pb.title %>"><i class="bi <%= pb.icon %> me-1"></i><%= pb.label %></span><% } %>
               <% if (w.timezone) { %><span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis"><i class="bi bi-clock me-1"></i><%= w.timezone %></span><% } %>
             </div>
             <div class="website-url mt-1"><%= w.base_url %></div>

@@ -3,17 +3,22 @@
  *
  * The full backup (Settings → Backup & Restore) is a VACUUM INTO snapshot of the database.
  * A website backup is the same kind of SQLite file — the same tables and indexes — holding
- * one website: its row, page configs and custom page types, plus a settings marker
- * (backup_scope = website). Admin accounts, the other settings (API key, session secret),
- * API logs and the image cache never go into it.
+ * one website: its row, page configs, custom page types and the Settings → Proxy entries it
+ * picked, plus a settings marker (backup_scope = website). Admin accounts, the other
+ * settings (API key, session secret, the global default proxy), WireGuard configs (private
+ * keys — the website names them), API logs and the image cache never go into it.
  *
  * A website can be restored from either kind of file: the website with its name is taken
  * from it. Backups of older versions (or crawlkomik) lack newer columns; those get the
- * column defaults.
+ * column defaults, and a website's own old proxy list moves to Settings → Proxy.
  */
 const fs = require('fs');
 const Database = require('better-sqlite3');
 const db = require('../models/database');
+const refs = require('./proxy-refs');
+
+// The Settings → Proxy names a website picked ("proxy:<name>" refs)
+const proxyNamesOf = (website) => refs.refList(website.proxy_refs).map(refs.parseRef).filter((r) => r && r.type === 'proxy').map((r) => r.name);
 
 const REQUIRED_TABLES = ['websites', 'page_configs', 'settings'];
 const WEBSITE_SCOPE = 'website';
@@ -63,7 +68,8 @@ function inspectBackup(file) {
 
 /**
  * The website called `name` from a backup file — a website backup or a full one — or,
- * without a name, the only website in it: { scope, website, pageConfigs, customPageTypes }.
+ * without a name, the only website in it: { scope, website, pageConfigs, customPageTypes,
+ * proxies } (proxies: the Settings → Proxy entries it picked, { name, url }).
  */
 function readWebsiteBackup(file, name = null) {
   const { src, tables } = openBackup(file);
@@ -81,11 +87,13 @@ function readWebsiteBackup(file, name = null) {
     const website = src.prepare('SELECT * FROM websites WHERE name = ?').get(name || websites[0]);
     // Very old versions kept custom page types for all websites together — those can't be matched
     const perWebsiteTypes = tables.includes('custom_page_types') && columns(src, 'custom_page_types').some((c) => c.name === 'website_id');
+    const proxyNames = tables.includes('proxies') ? proxyNamesOf(website) : [];
     return {
       scope,
       website,
       pageConfigs: src.prepare('SELECT * FROM page_configs WHERE website_id = ?').all(website.id),
       customPageTypes: perWebsiteTypes ? src.prepare('SELECT * FROM custom_page_types WHERE website_id = ?').all(website.id) : [],
+      proxies: proxyNames.length ? src.prepare(`SELECT name, url FROM proxies WHERE name IN (${proxyNames.map(() => '?').join(', ')})`).all(...proxyNames) : [],
     };
   } finally {
     src.close();
@@ -117,6 +125,8 @@ function exportWebsite(id, file) {
       insertRows(out, 'websites', [website]);
       insertRows(out, 'page_configs', live.prepare('SELECT * FROM page_configs WHERE website_id = ?').all(id));
       insertRows(out, 'custom_page_types', live.prepare('SELECT * FROM custom_page_types WHERE website_id = ?').all(id));
+      // Address and login included, so the website crawls the same way wherever it is restored
+      insertRows(out, 'proxies', proxyNamesOf(website).map((n) => live.prepare('SELECT * FROM proxies WHERE name = ?').get(n)).filter(Boolean));
       const mark = out.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
       mark.run('backup_scope', WEBSITE_SCOPE);
       mark.run('backup_website', website.name);
@@ -130,10 +140,11 @@ function exportWebsite(id, file) {
 /**
  * Puts a website read from a backup into this database: over website `targetId`, or as a
  * new website when that is null. Its page configs and custom page types replace the
- * current ones; nothing else changes (other websites, image cache, logs). Columns the
- * backup lacks get their defaults, ids are this database's own. Returns the website id.
+ * current ones and its proxies join Settings → Proxy (an entry with the same address is
+ * reused); nothing else changes (other websites, image cache, logs). Columns the backup
+ * lacks get their defaults, ids are this database's own. Returns the website id.
  */
-function restoreWebsite({ website, pageConfigs, customPageTypes }, targetId = null) {
+function restoreWebsite({ website, pageConfigs, customPageTypes, proxies = [] }, targetId = null) {
   const live = db.getDb();
   return live.transaction(() => {
     let id = targetId;
@@ -149,6 +160,15 @@ function restoreWebsite({ website, pageConfigs, customPageTypes }, targetId = nu
     }
     insertRows(live, 'page_configs', pageConfigs.map((row) => ({ ...row, website_id: id })), ['id']);
     insertRows(live, 'custom_page_types', customPageTypes.map((row) => ({ ...row, website_id: id })), ['id']);
+    // Its proxies by the names they have here (one may exist under another name, or its
+    // name may be taken by another proxy)
+    const here = new Map(proxies.map((p) => [refs.proxyRef(p.name), refs.proxyRef(db.importProxy(p))]));
+    if (website.proxy_refs != null && [...here].some(([from, to]) => from !== to)) {
+      const text = refs.refList(website.proxy_refs).map((r) => here.get(r) || r).join('\n');
+      live.prepare('UPDATE websites SET proxy_refs = ? WHERE id = ?').run(text, id);
+    }
+    // A backup from before Settings → Proxy: the website's own list moves there now
+    db.convertLegacyProxies([id]);
     return id;
   })();
 }

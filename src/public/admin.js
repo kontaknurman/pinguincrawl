@@ -241,6 +241,70 @@
     }
   });
 
+  // ---------- Proxy / VPN picker (partials/proxy-picker.ejs) ----------
+  // With a proxy or WireGuard config as the main choice, more can be added below it for
+  // rotation / failover, numbered in order. "Default global" and "no proxy" hide them (they
+  // are disabled, so not submitted, but kept in case the admin switches back).
+  document.querySelectorAll('[data-proxy-picker]').forEach((picker) => {
+    const main = picker.querySelector('[data-picker-main]');
+    const extra = picker.querySelector('[data-picker-extra]');
+    const rows = picker.querySelector('[data-picker-rows]');
+    const add = picker.querySelector('[data-picker-add]');
+    const template = picker.querySelector('template[data-picker-template]');
+    const rotation = picker.querySelector('[data-picker-rotation]');
+    const mainIndex = picker.querySelector('[data-picker-index]');
+    const update = () => {
+      const entry = main.value !== 'default' && main.value !== 'none';
+      const count = entry ? 1 + rows.children.length : 0;
+      extra.hidden = !entry;
+      rows.querySelectorAll('select').forEach((s) => { s.disabled = !entry; });
+      rows.querySelectorAll('[data-picker-index]').forEach((el, i) => { el.textContent = String(i + 2); });
+      mainIndex.hidden = count < 2;
+      rotation.hidden = count < 2;
+    };
+    const changed = () => {
+      update();
+      main.dispatchEvent(new Event('change', { bubbles: true })); // e.g. the unsaved-changes guard
+    };
+    if (add && template) {
+      add.hidden = false;
+      add.addEventListener('click', () => {
+        const row = template.content.firstElementChild.cloneNode(true);
+        const select = row.querySelector('select');
+        // Start on the first entry that isn't in the list yet
+        const taken = new Set([main.value, ...Array.from(rows.querySelectorAll('select'), (s) => s.value)]);
+        const free = Array.from(select.options).find((o) => !taken.has(o.value));
+        if (free) select.value = free.value;
+        rows.appendChild(row);
+        changed();
+        select.focus();
+      });
+    }
+    rows.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-picker-remove]');
+      if (!btn) return;
+      btn.closest('[data-picker-row]').remove();
+      changed();
+      (add && !add.hidden ? add : main).focus();
+    });
+    main.addEventListener('change', update);
+    update();
+  });
+
+  // ---------- Slow actions: <form data-busy> ----------
+  // A spinner on the submit button while the server works (a proxy test can take seconds)
+  document.addEventListener('submit', (e) => {
+    const form = e.target;
+    if (e.defaultPrevented || !form.matches('form[data-busy]')) return;
+    const btn = e.submitter || form.querySelector('[type="submit"]');
+    if (!btn) return;
+    const icon = btn.querySelector('.bi');
+    if (icon) icon.className = 'spinner-border spinner-border-sm me-1';
+    btn.setAttribute('aria-busy', 'true');
+    // After this event: a button disabled during it would not be submitted
+    setTimeout(() => { btn.disabled = true; }, 0);
+  });
+
   // ---------- Auto-submit filters: <select data-autosubmit> ----------
   document.addEventListener('change', (e) => {
     if (e.target.matches('[data-autosubmit]') && e.target.form) e.target.form.submit();

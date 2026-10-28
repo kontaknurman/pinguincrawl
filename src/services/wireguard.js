@@ -31,7 +31,6 @@ const os = require('os');
 const path = require('path');
 const db = require('../models/database');
 
-const PREFIX = 'wireguard:'; // how a config sits in a website's proxy rotation
 const OWNER_ENV = 'PINGUINCRAWL_WIREGUARD_OWNER_PID';
 // An unused tunnel stops after this long (a restart costs one handshake, ~1 RTT)
 const IDLE_MS = (parseInt(process.env.WIREGUARD_IDLE_SECONDS, 10) || 300) * 1000;
@@ -447,9 +446,9 @@ function ensureReaper() {
 function acquire(name) {
   return withLock(name, async () => {
     const row = db.getWireguardConfigByName(name);
-    // Only reachable through a restored website backup (deleting a ticked config is refused);
-    // the website's next config gets its turn
-    if (!row) throw tunnelError(name, 'not found — add it under Settings → WireGuard, or untick it on this website');
+    // Only reachable through a restored website backup (deleting a config in use is refused);
+    // the website's next entry gets its turn
+    if (!row) throw tunnelError(name, 'not found — add it under Settings → WireGuard, or choose another one for this website');
     const hash = crypto.createHash('sha256').update(row.config).digest('hex');
     let t = instances.get(name);
     const dead = t && (t.proc.exitCode !== null || t.proc.signalCode !== null);
@@ -565,18 +564,7 @@ function sweepOrphans() {
   return killed;
 }
 
-// ---------- rotation entries ----------
-
-const isEntry = (entry) => typeof entry === 'string' && entry.startsWith(PREFIX);
-const entryName = (entry) => entry.slice(PREFIX.length);
-
-/** A website's selected configs (stored one name per line) as rotation entries. */
-function websiteEntries(website) {
-  return String(website.wireguard || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map((n) => PREFIX + n);
-}
-
 module.exports = {
-  PREFIX,
   NAME_RE,
   IDLE_MS,
   HANDSHAKE_TIMEOUT_MS,
@@ -594,7 +582,4 @@ module.exports = {
   stop,
   runtimeStatus,
   sweepOrphans,
-  isEntry,
-  entryName,
-  websiteEntries,
 };

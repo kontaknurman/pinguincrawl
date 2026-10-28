@@ -1,0 +1,11 @@
+<div class="input-group mt-2" data-picker-row>
+  <span class="input-group-text" data-picker-index><%= index %></span>
+  <select class="form-select" name="proxy_more" aria-label="Proxy / VPN tambahan">
+    <% groups.forEach(g => { %>
+      <optgroup label="<%= g.label %>">
+        <% g.items.forEach(o => { %><option value="<%= o.value %>" <%= o.value === value ? 'selected' : '' %>><%= o.label %></option><% }) %>
+      </optgroup>
+    <% }) %>
+  </select>
+  <button type="button" class="btn btn-outline-secondary" data-picker-remove title="Hapus dari daftar" aria-label="Hapus dari daftar"><i class="bi bi-x-lg"></i></button>
+</div>

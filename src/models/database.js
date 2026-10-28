@@ -1,5 +1,6 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const refs = require('../services/proxy-refs');
 
 const DB_PATH = path.join(__dirname, '..', '..', 'data', 'pinguincrawl.db');
 
@@ -143,9 +144,8 @@ function initTables() {
     db.exec("ALTER TABLE websites ADD COLUMN proxy_rotation TEXT DEFAULT 'round_robin'");
   }
 
-  // Migration: second kind of proxy. proxy_type 'wireguard' crawls through the WireGuard
-  // configs named in `wireguard` (one per line, from Settings → WireGuard) instead of the
-  // proxy list; both are kept, so switching back and forth loses nothing.
+  // Migration (superseded by proxy_refs below, kept so older databases convert): proxy_type
+  // 'wireguard' crawled through the configs named in `wireguard` instead of the proxy list
   const wCols5 = db.prepare("PRAGMA table_info(websites)").all();
   if (!wCols5.find(c => c.name === 'proxy_type')) {
     db.exec("ALTER TABLE websites ADD COLUMN proxy_type TEXT DEFAULT 'proxy'");
@@ -162,6 +162,24 @@ function initTables() {
       updated_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration: proxies live in Settings → Proxy as named entries, like WireGuard configs,
+  // and a website picks from both: proxy_refs is its choice, one ref per line
+  // ("proxy:<name>", "wireguard:<name>"), or "default" / "none" (see services/proxy-refs.js).
+  // NULL marks a website still on the old per-website proxy list — converted at the end of
+  // initTables. The old columns (proxy, proxy_type, wireguard) are only read for that.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS proxies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  if (!db.prepare("PRAGMA table_info(websites)").all().find(c => c.name === 'proxy_refs')) {
+    db.exec("ALTER TABLE websites ADD COLUMN proxy_refs TEXT DEFAULT NULL");
+  }
 
   // Migration: add use_js column to page_configs (1=browser render, 0=simple HTTP)
   const pcCols4 = db.prepare("PRAGMA table_info(page_configs)").all();
@@ -259,6 +277,75 @@ function initTables() {
     );
   `);
   if (db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) seedFirstUser();
+
+  try {
+    convertLegacyProxies();
+  } catch (err) {
+    // Those websites keep crawling through their old lists (see proxyPool.selectionFor)
+    console.warn(`[Proxy] Could not move the websites' proxy lists to Settings → Proxy (${err.message}) — retried at the next start`);
+  }
+}
+
+// --- Proxy library (Settings → Proxy) ---
+
+const proxyLines = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !s.startsWith('#'));
+
+/** host-port of a proxy line (any accepted format), as a name: "1.2.3.4-8080". */
+function proxyBaseName(line) {
+  let host = '';
+  let port = '';
+  const hpup = !line.includes('://') && /^([^:@\s/]+):(\d{1,5}):/.exec(line);
+  if (hpup) {
+    [, host, port] = hpup;
+  } else {
+    try {
+      const u = new URL(line.includes('://') ? line : `http://${line}`);
+      host = u.hostname.replace(/^\[|\]$/g, '');
+      port = u.port;
+    } catch { /* named below */ }
+  }
+  const base = `${host}${port ? '-' + port : ''}`.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-._]+|-+$/g, '').slice(0, 56);
+  return base || 'proxy';
+}
+
+/** A name no proxy has yet: base, base-2, base-3, … (64 characters at most) */
+function freeProxyName(base) {
+  const taken = (n) => !!db.prepare('SELECT 1 FROM proxies WHERE name = ?').get(n);
+  if (!taken(base)) return base;
+  for (let i = 2; ; i++) if (!taken(`${base.slice(0, 58)}-${i}`)) return `${base.slice(0, 58)}-${i}`;
+}
+
+/** The library entry for this exact proxy line, created when there is none. Returns its name. */
+function ensureProxy(line) {
+  const existing = db.prepare('SELECT name FROM proxies WHERE url = ?').get(line);
+  if (existing) return existing.name;
+  const name = freeProxyName(proxyBaseName(line));
+  db.prepare('INSERT INTO proxies (name, url) VALUES (?, ?)').run(name, line);
+  return name;
+}
+
+/**
+ * Websites still on their own proxy list (proxy_refs NULL: older database, or an older
+ * website backup just restored) move to the library: every line becomes a named entry (one
+ * per distinct line, shared between websites) and the website refers to them, keeping its
+ * rotation. A WireGuard selection becomes WireGuard refs. Nothing configured → "default".
+ * All or nothing; throws on failure.
+ */
+function convertLegacyProxies(ids = null) {
+  const where = ids ? `AND id IN (${ids.map(() => '?').join(', ')})` : '';
+  const rows = db.prepare(`SELECT id, name, proxy, proxy_type, wireguard FROM websites WHERE proxy_refs IS NULL ${where}`).all(...(ids || []));
+  const moved = db.transaction(() => rows.map((w) => {
+    // Every old proxy line gets an entry, even on a website that used WireGuard: nothing is lost
+    const proxyRefs = proxyLines(w.proxy).map((line) => refs.proxyRef(ensureProxy(line)));
+    const wgRefs = proxyLines(w.wireguard).map((n) => refs.wireguardRef(n));
+    const chosen = [...new Set(w.proxy_type === 'wireguard' && wgRefs.length ? wgRefs : proxyRefs)];
+    db.prepare("UPDATE websites SET proxy_refs = ?, proxy = NULL, proxy_type = 'proxy', wireguard = NULL WHERE id = ?")
+      .run(chosen.length ? chosen.join('\n') : refs.DEFAULT, w.id);
+    return { name: w.name, n: chosen.length };
+  }))();
+  for (const { name, n } of moved) {
+    if (n) console.log(`[Proxy] "${name}": its proxy list moved to Settings → Proxy (${n} entr${n === 1 ? 'y' : 'ies'})`);
+  }
 }
 
 /**
@@ -316,18 +403,18 @@ function getWebsiteByName(name) {
   return getDb().prepare('SELECT * FROM websites WHERE name = ?').get(name);
 }
 
-function createWebsite({ name, base_url, proxy, proxy_type, wireguard, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
+function createWebsite({ name, base_url, proxy_refs, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
   const stmt = getDb().prepare(
-    `INSERT INTO websites (name, base_url, proxy, proxy_type, wireguard, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO websites (name, base_url, proxy_refs, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  return stmt.run(name, base_url, proxy || null, proxy_type === 'wireguard' ? 'wireguard' : 'proxy', wireguard || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null);
+  return stmt.run(name, base_url, proxy_refs || refs.DEFAULT, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null);
 }
 
-function updateWebsite(id, { name, base_url, active, proxy, proxy_type, wireguard, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
+function updateWebsite(id, { name, base_url, active, proxy_refs, proxy_rotation, user_agent, image_proxy, image_cache_method, custom_headers, cookies, local_storage, timezone }) {
   const stmt = getDb().prepare(
-    `UPDATE websites SET name=?, base_url=?, active=?, proxy=?, proxy_type=?, wireguard=?, proxy_rotation=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE websites SET name=?, base_url=?, active=?, proxy_refs=?, proxy_rotation=?, user_agent=?, image_proxy=?, image_cache_method=?, custom_headers=?, cookies=?, local_storage=?, timezone=?, updated_at=datetime('now') WHERE id=?`
   );
-  return stmt.run(name, base_url, active ? 1 : 0, proxy || null, proxy_type === 'wireguard' ? 'wireguard' : 'proxy', wireguard || null, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
+  return stmt.run(name, base_url, active ? 1 : 0, proxy_refs || refs.DEFAULT, proxy_rotation || 'round_robin', user_agent || null, image_proxy ? 1 : 0, image_cache_method || 'browser', custom_headers || '{}', cookies || '[]', local_storage || '{}', timezone || null, id);
 }
 
 function updateWebsiteCookies(id, cookies) {
@@ -612,11 +699,95 @@ function deleteUser(id) {
   return getDb().prepare('DELETE FROM users WHERE id = ?').run(id);
 }
 
-// --- WireGuard configs (Settings → WireGuard) ---
-// Websites refer to them by name (websites.wireguard, one per line), so a website backup
-// restored on another server finds configs with the same names there.
+// --- Proxy refs: where websites and the global default point (see services/proxy-refs.js) ---
 
-const wgNames = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+/** The global default ("Settings → Proxy → default for all websites"): { refs, rotation }. */
+function getDefaultProxy() {
+  const text = getSetting('proxy_default');
+  return { refs: !text || text === refs.NONE ? [] : refs.refList(text), rotation: getSetting('proxy_default_rotation') || 'round_robin' };
+}
+
+function setDefaultProxy(refList, rotation) {
+  setSetting('proxy_default', refList.length ? refList.join('\n') : refs.NONE);
+  setSetting('proxy_default_rotation', rotation || 'round_robin');
+}
+
+/** { ref: [who uses it] } — website names, and "Default global" for the global default. */
+function getProxyRefUsage() {
+  const usage = {};
+  const add = (ref, who) => { (usage[ref] = usage[ref] || []).push(who); };
+  for (const w of getDb().prepare('SELECT name, proxy_refs FROM websites ORDER BY name').all()) {
+    for (const r of refs.refList(w.proxy_refs)) if (refs.parseRef(r)) add(r, w.name);
+  }
+  for (const r of getDefaultProxy().refs) add(r, 'Default global');
+  return usage;
+}
+
+/** A renamed proxy or WireGuard config: point every website and the default at the new name. */
+function renameRef(oldRef, newRef) {
+  const d = getDb();
+  const swap = (text) => refs.refList(text).map((r) => (r === oldRef ? newRef : r)).join('\n');
+  for (const w of d.prepare('SELECT id, proxy_refs FROM websites WHERE proxy_refs IS NOT NULL').all()) {
+    if (refs.refList(w.proxy_refs).includes(oldRef)) d.prepare('UPDATE websites SET proxy_refs = ? WHERE id = ?').run(swap(w.proxy_refs), w.id);
+  }
+  const def = getSetting('proxy_default');
+  if (def && refs.refList(def).includes(oldRef)) setSetting('proxy_default', swap(def));
+}
+
+// --- Proxies (Settings → Proxy) ---
+
+function getProxies() {
+  return getDb().prepare('SELECT * FROM proxies ORDER BY name').all();
+}
+
+function getProxyById(id) {
+  return getDb().prepare('SELECT * FROM proxies WHERE id = ?').get(id);
+}
+
+function getProxyByName(name) {
+  return getDb().prepare('SELECT * FROM proxies WHERE name = ?').get(name);
+}
+
+function createProxy({ name, url }) {
+  return getDb().prepare('INSERT INTO proxies (name, url) VALUES (?, ?)').run(name, url);
+}
+
+/** New name and/or address; a new name follows into the websites and the default using it. */
+function updateProxy(id, { name, url }) {
+  const d = getDb();
+  return d.transaction(() => {
+    const old = getProxyById(id);
+    d.prepare("UPDATE proxies SET name = ?, url = ?, updated_at = datetime('now') WHERE id = ?").run(name, url, id);
+    if (old && old.name !== name) renameRef(refs.proxyRef(old.name), refs.proxyRef(name));
+  })();
+}
+
+function deleteProxy(id) {
+  return getDb().prepare('DELETE FROM proxies WHERE id = ?').run(id);
+}
+
+/** Suggested name for a proxy line: its host-port, made unique. */
+function suggestProxyName(line) {
+  getDb();
+  return freeProxyName(proxyBaseName(line));
+}
+
+/**
+ * A proxy from a website backup: the entry with the same address when there is one,
+ * otherwise added — under its own name if that is free here. Returns its name here.
+ */
+function importProxy({ name, url }) {
+  const d = getDb();
+  const address = String(url || '').trim();
+  const existing = d.prepare('SELECT name FROM proxies WHERE url = ?').get(address);
+  if (existing) return existing.name;
+  const wanted = /^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(name)) ? String(name) : proxyBaseName(address);
+  const free = freeProxyName(wanted);
+  d.prepare('INSERT INTO proxies (name, url) VALUES (?, ?)').run(free, address);
+  return free;
+}
+
+// --- WireGuard configs (Settings → WireGuard) ---
 
 function getWireguardConfigs() {
   return getDb().prepare('SELECT * FROM wireguard_configs ORDER BY name').all();
@@ -634,20 +805,13 @@ function createWireguardConfig({ name, config }) {
   return getDb().prepare('INSERT INTO wireguard_configs (name, config) VALUES (?, ?)').run(name, config);
 }
 
-/** New name and/or text. A new name is carried into the websites that use the config. */
+/** New name and/or text. A new name follows into the websites and the default using it. */
 function updateWireguardConfig(id, { name, config }) {
   const d = getDb();
   return d.transaction(() => {
     const old = getWireguardConfigById(id);
     d.prepare("UPDATE wireguard_configs SET name = ?, config = ?, updated_at = datetime('now') WHERE id = ?").run(name, config, id);
-    if (old && old.name !== name) {
-      for (const w of d.prepare('SELECT id, wireguard FROM websites WHERE wireguard IS NOT NULL').all()) {
-        const names = wgNames(w.wireguard);
-        if (names.includes(old.name)) {
-          d.prepare('UPDATE websites SET wireguard = ? WHERE id = ?').run(names.map((n) => (n === old.name ? name : n)).join('\n'), w.id);
-        }
-      }
-    }
+    if (old && old.name !== name) renameRef(refs.wireguardRef(old.name), refs.wireguardRef(name));
   })();
 }
 
@@ -655,11 +819,12 @@ function deleteWireguardConfig(id) {
   return getDb().prepare('DELETE FROM wireguard_configs WHERE id = ?').run(id);
 }
 
-/** { config name: [website names that selected it] } — whatever their current proxy type. */
+/** { config name: [who uses it] } */
 function getWireguardUsage() {
   const usage = {};
-  for (const w of getDb().prepare('SELECT name, wireguard FROM websites WHERE wireguard IS NOT NULL ORDER BY name').all()) {
-    for (const n of wgNames(w.wireguard)) (usage[n] = usage[n] || []).push(w.name);
+  for (const [ref, who] of Object.entries(getProxyRefUsage())) {
+    const r = refs.parseRef(ref);
+    if (r && r.type === 'wireguard') usage[r.name] = who;
   }
   return usage;
 }
@@ -726,6 +891,18 @@ module.exports = {
   bumpSessionVersion,
   touchUserLogin,
   deleteUser,
+  getDefaultProxy,
+  setDefaultProxy,
+  getProxyRefUsage,
+  getProxies,
+  getProxyById,
+  getProxyByName,
+  createProxy,
+  updateProxy,
+  deleteProxy,
+  suggestProxyName,
+  importProxy,
+  convertLegacyProxies: (ids) => { getDb(); return convertLegacyProxies(ids); },
   getWireguardConfigs,
   getWireguardConfigById,
   getWireguardConfigByName,

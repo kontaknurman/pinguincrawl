@@ -9,9 +9,11 @@ const { requireAuth, createAuthCookie, clearAuthCookie, create2faPendingCookie, 
 const OTPAuth = require('otpauth');
 const QRCode = require('qrcode');
 const { clearAllImages } = require('../services/image-proxy');
-const { getActiveBrowserCount } = require('../services/browser');
+const { getActiveBrowserCount, parseProxy } = require('../services/browser');
+const browserCheck = require('../services/browser-check');
 const lightpanda = require('../services/lightpanda');
 const proxyPool = require('../services/proxy-pool');
+const refs = require('../services/proxy-refs');
 const loginGuard = require('../services/login-guard');
 const storage = require('../services/storage');
 const backup = require('../services/backup');
@@ -55,6 +57,10 @@ const FLASH = {
     website_saved: 'Website saved',
     website_deleted: 'Website deleted',
     website_restored: 'Website restored from the backup',
+    proxy_default: 'Default proxy saved — websites set to "Default global" use it from the next crawl',
+    proxy_added: 'Proxies added: {n}',
+    proxy_saved: 'Proxy saved — websites using it switch at their next crawl',
+    proxy_deleted: 'Proxy deleted',
     wg_added: '{n} WireGuard config(s) added',
     wg_saved: 'WireGuard config saved — its tunnel restarts with it at the next crawl',
     wg_deleted: 'WireGuard config deleted',
@@ -210,14 +216,122 @@ router.use((req, res, next) => {
   next();
 });
 
+// --- Proxy choices ---
+// Websites (and the global default) pick from the entries of Settings → Proxy and Settings →
+// WireGuard with partials/proxy-picker.ejs; what they store is described in services/proxy-refs.js.
+
+const ROTATION_LABELS = { round_robin: 'bergiliran', random: 'acak', failover: 'cadangan' };
+const PROXY_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const proxyNameFrom = (text) => formText(text).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-._]+|-+$/g, '').slice(0, 64);
+const rotationField = (value) => (proxyPool.ROTATIONS.includes(value) ? value : 'round_robin');
+
+/** A proxy address for lists: { ok, kind, display, login } — never the password. */
+function proxyInfo(url) {
+  try {
+    const { server, display } = parseProxy(url);
+    const user = new URL(server).username;
+    return { ok: true, kind: display.split('://')[0].replace('socks5h', 'socks5').toUpperCase(), display, login: user ? decodeURIComponent(user) : null };
+  } catch (err) {
+    return { ok: false, kind: '?', display: url ? 'alamat tidak valid' : '(kosong)', login: null, error: err.message };
+  }
+}
+
+/** Entries as text: "sg-1, wireguard vpn-jp · bergiliran", or "tanpa proxy". */
+function selectionText(entries, rotation) {
+  if (!entries.length) return 'tanpa proxy';
+  const names = entries.map(proxyPool.displayOf);
+  const shown = names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
+  return entries.length > 1 ? `${shown} · ${ROTATION_LABELS[rotation] || ROTATION_LABELS.round_robin}` : shown;
+}
+
+/** What a picker can offer, grouped; refs among `selected` that no longer exist get a group of their own. */
+function pickerGroups(selected) {
+  const proxies = db.getProxies().map((p) => ({ value: refs.proxyRef(p.name), label: `${p.name} — ${proxyInfo(p.url).display}` }));
+  const configs = db.getWireguardConfigs().map((c) => {
+    const s = wireguard.summarize(c.config);
+    return { value: refs.wireguardRef(c.name), label: `${c.name} — ${s.ok ? s.endpoint : 'config rusak'}` };
+  });
+  const known = new Set([...proxies, ...configs].map((o) => o.value));
+  const missing = selected.filter((r) => refs.parseRef(r) && !known.has(r)).map((r) => {
+    const { type, name } = refs.parseRef(r);
+    return { value: r, label: `${name} (${type === 'wireguard' ? 'WireGuard' : 'proxy'}) — tidak ada lagi di Settings` };
+  });
+  return [
+    { label: 'Proxy — Settings → Proxy', items: proxies },
+    { label: 'WireGuard (VPN) — Settings → WireGuard', items: configs },
+    { label: 'Tidak ada lagi di Settings', items: missing },
+  ].filter((g) => g.items.length);
+}
+
+/** Locals for partials/proxy-picker.ejs. `stored`: "default", "none" or refs, one per line. */
+function pickerLocals(id, stored, rotation, { allowDefault }) {
+  const text = String(stored || (allowDefault ? refs.DEFAULT : refs.NONE)).trim();
+  const keyword = text === refs.NONE || (text === refs.DEFAULT && !allowDefault) ? refs.NONE : text === refs.DEFAULT ? refs.DEFAULT : null;
+  const selected = keyword ? [] : refs.refList(text);
+  const d = allowDefault ? db.getDefaultProxy() : null;
+  return {
+    id,
+    allowDefault,
+    keyword,
+    selected,
+    rotation: rotationField(rotation),
+    defaultLabel: d ? `Default global (${selectionText(d.refs, d.rotation)})` : null,
+    groups: pickerGroups(selected),
+  };
+}
+
+// What a picker submitted, unchecked: "default", "none", or refs one per line, in order
+function pickerRaw(body) {
+  const main = formText(body.proxy_main).trim();
+  if (main === refs.DEFAULT || main === refs.NONE) return main;
+  const more = [].concat(body.proxy_more || []).filter((v) => typeof v === 'string');
+  return refs.refList([main, ...more].join('\n')).join('\n') || refs.DEFAULT;
+}
+
+/**
+ * A picker's choice, checked: "default" (websites only), "none", or refs of entries that
+ * exist — or that were already chosen (`keep`), so an entry that disappeared meanwhile
+ * doesn't block saving everything else.
+ */
+function pickerChoice(body, { allowDefault, keep = [] }) {
+  const raw = pickerRaw(body);
+  if (raw === refs.NONE || (raw === refs.DEFAULT && allowDefault)) return raw;
+  if (raw === refs.DEFAULT) throw new Error('Choose a proxy, a WireGuard config or "no proxy"');
+  for (const r of raw.split('\n')) {
+    const ref = refs.parseRef(r);
+    if (!ref) throw new Error(`Unknown proxy choice "${r}"`);
+    if (keep.includes(r)) continue;
+    if (ref.type === 'proxy' && !db.getProxyByName(ref.name)) throw new Error(`Proxy "${ref.name}" is no longer in Settings → Proxy — choose another one`);
+    if (ref.type === 'wireguard' && !db.getWireguardConfigByName(ref.name)) throw new Error(`WireGuard config "${ref.name}" is no longer in Settings → WireGuard — choose another one`);
+  }
+  return raw;
+}
+
+/** Health of the entries a website crawls through, for its form. */
+function proxyStatusOf(entries) {
+  return proxyPool.status(entries).map((s, i) => ({ ...s, type: (refs.parseRef(entries[i]) || { type: 'proxy' }).type }));
+}
+
+/** The dashboard's proxy badge for a website: null when it connects directly. */
+function proxyBadge(website) {
+  const sel = proxyPool.selectionFor(website);
+  if (!sel.entries.length) return null;
+  const types = new Set(sel.entries.map((e) => (refs.parseRef(e) || { type: 'proxy' }).type));
+  const kind = types.size > 1 ? 'Proxy + WireGuard' : types.has('wireguard') ? 'WireGuard' : 'Proxy';
+  return {
+    icon: types.size === 1 && types.has('wireguard') ? 'bi-shield-shaded' : 'bi-shield-lock',
+    label: `${kind}${sel.entries.length > 1 ? ' ×' + sel.entries.length : ''}${sel.source === 'default' ? ' · default' : ''}`,
+    title: `${sel.source === 'default' ? 'Default global: ' : ''}${selectionText(sel.entries, sel.rotation)}`,
+  };
+}
+
 // --- Dashboard ---
 router.get('/', (req, res) => {
   const websites = db.getAllWebsites();
   res.render('pages/dashboard', {
     page: 'dashboard',
     websites,
-    // Proxy labels without credentials (host:port:user:pass would slip past a URL regex)
-    proxyLabels: Object.fromEntries(websites.map((w) => [w.id, proxyPool.websiteProxies(w).map(proxyPool.displayOf)])),
+    proxyBadges: Object.fromEntries(websites.map((w) => [w.id, proxyBadge(w)])),
     configCounts: db.getPageConfigCountsByWebsite(),
     browserStatus: getActiveBrowserCount(),
     logStats: db.getApiLogStats(),
@@ -244,6 +358,9 @@ function settingsLocals(req, extra = {}) {
     totpEnabled: !!req.user.totp_enabled,
     minPassword: db.MIN_PASSWORD_LENGTH,
     clientIp: (req.ip || '').replace(/^::ffff:/, ''),
+    px: proxyLocals(),
+    proxyError: null,
+    proxyForm: {},
     wg: wireguardLocals(),
     wgError: null,
     wgForm: {},
@@ -265,6 +382,159 @@ function renderSettingsError(req, res, section, field, message) {
 
 router.get('/settings', (req, res) => {
   res.render('pages/settings', settingsLocals(req));
+});
+
+// --- Proxies (Settings → Proxy) and the global default ---
+
+function proxyLocals() {
+  const usage = db.getProxyRefUsage();
+  const d = db.getDefaultProxy();
+  return {
+    testUrl: browserCheck.PROXY_TEST_URL,
+    picker: pickerLocals('dp', d.refs.join('\n'), d.rotation, { allowDefault: false }),
+    defaultUsers: db.getAllWebsites().filter((w) => proxyPool.selectionFor(w).source === 'default').map((w) => w.name),
+    entries: db.getProxies().map((p) => {
+      const ref = refs.proxyRef(p.name);
+      return { id: p.id, name: p.name, ...proxyInfo(p.url), usedBy: usage[ref] || [], isDefault: d.refs.includes(ref), health: proxyPool.status([ref])[0] };
+    }),
+  };
+}
+
+function renderProxy(req, res, { error = null, ok = null, form = {} } = {}) {
+  res.render('pages/settings', settingsLocals(req, {
+    focusSection: 'proxy', proxyError: error, proxyForm: form,
+    flash: error ? { type: 'danger', text: error } : ok ? { type: 'success', text: ok } : null,
+  }));
+}
+
+// The same proxy (address + login), however it is written
+function serverOf(url) {
+  try {
+    return parseProxy(url).server;
+  } catch {
+    return String(url);
+  }
+}
+
+router.post('/proxy-default', express.urlencoded({ extended: true }), (req, res) => {
+  try {
+    const choice = pickerChoice(req.body, { allowDefault: false, keep: db.getDefaultProxy().refs });
+    db.setDefaultProxy(choice === refs.NONE ? [] : choice.split('\n'), rotationField(req.body.proxy_rotation));
+    res.redirect('/admin/settings?ok=proxy_default#proxy');
+  } catch (err) {
+    renderProxy(req, res, { error: err.message });
+  }
+});
+
+// One address per line. Names: the given one (a prefix for several: name-1, name-2, …),
+// otherwise each proxy's host-port
+router.post('/proxies', express.urlencoded({ extended: true }), (req, res) => {
+  const nameText = formText(req.body.name);
+  const urlsText = formText(req.body.urls);
+  const fail = (message) => renderProxy(req, res, { error: message, form: { name: nameText, urls: urlsText } });
+  const lines = proxyPool.parseProxyList(urlsText);
+  if (!lines.length) return fail('Enter at least one proxy address');
+  const prefix = proxyNameFrom(nameText);
+  if (nameText.trim() && !prefix) return fail('Name: use letters, numbers, dot, dash or underscore');
+  if (prefix && lines.length === 1 && db.getProxyByName(prefix)) return fail(`A proxy named "${prefix}" already exists`);
+
+  const known = new Map(db.getProxies().map((p) => [serverOf(p.url), p.name]));
+  const fresh = [];
+  const skipped = [];
+  for (const [i, line] of lines.entries()) {
+    let server;
+    try {
+      server = parseProxy(line).server;
+    } catch (err) {
+      return fail(`Line ${i + 1}: ${err.message}`);
+    }
+    if (known.has(server)) {
+      skipped.push(known.get(server) || `line ${i + 1}`);
+      continue;
+    }
+    known.set(server, null);
+    fresh.push(line);
+  }
+
+  db.getDb().transaction(() => {
+    let n = 1;
+    for (const line of fresh) {
+      let name;
+      if (!prefix) name = db.suggestProxyName(line);
+      else if (lines.length === 1) name = prefix;
+      else {
+        while (db.getProxyByName(`${prefix.slice(0, 60)}-${n}`)) n++;
+        name = `${prefix.slice(0, 60)}-${n++}`;
+      }
+      db.createProxy({ name, url: line });
+    }
+  })();
+
+  if (!skipped.length) return res.redirect(`/admin/settings?ok=proxy_added&n=${fresh.length}#proxy`);
+  const already = `already in the list: ${[...new Set(skipped)].join(', ')}`;
+  if (!fresh.length) return fail(`Nothing added — ${already}`);
+  renderProxy(req, res, { ok: `Proxies added: ${fresh.length} (${skipped.length} ${already})` });
+});
+
+function proxyEditLocals(p, extra = {}) {
+  const ref = refs.proxyRef(p.name);
+  return { page: 'settings', proxy: p, info: proxyInfo(p.url), usedBy: db.getProxyRefUsage()[ref] || [], health: proxyPool.status([ref])[0], error: null, ...extra };
+}
+
+router.get('/proxies/:id', (req, res) => {
+  const p = db.getProxyById(req.params.id);
+  if (!p) return res.redirect('/admin/settings#proxy');
+  res.render('pages/proxy-edit', proxyEditLocals(p));
+});
+
+router.post('/proxies/:id', express.urlencoded({ extended: true }), (req, res) => {
+  const p = db.getProxyById(req.params.id);
+  if (!p) return res.redirect('/admin/settings#proxy');
+  const name = proxyNameFrom(req.body.name);
+  const url = formText(req.body.url).trim();
+  const fail = (message) => res.render('pages/proxy-edit', proxyEditLocals(p, {
+    form: { name: formText(req.body.name), url }, error: message, flash: { type: 'danger', text: message },
+  }));
+  if (!PROXY_NAME_RE.test(name)) return fail('Name is required — letters, numbers, dot, dash or underscore');
+  const other = db.getProxyByName(name);
+  if (other && other.id !== p.id) return fail(`A proxy named "${name}" already exists`);
+  let server;
+  try {
+    server = (parseProxy(url) || {}).server;
+  } catch (err) {
+    return fail(err.message);
+  }
+  if (!server) return fail('Address is required');
+  const dup = db.getProxies().find((q) => q.id !== p.id && serverOf(q.url) === server);
+  if (dup) return fail(`That proxy is already in the list as "${dup.name}"`);
+  db.updateProxy(p.id, { name, url });
+  proxyPool.forget(refs.proxyRef(p.name)); // a new address starts with a clean slate
+  res.redirect('/admin/settings?ok=proxy_saved#proxy');
+});
+
+// Open PROXY_TEST_URL through the proxy with Lightpanda — exactly what a crawl does
+router.post('/proxies/:id/test', async (req, res) => {
+  const p = db.getProxyById(req.params.id);
+  if (!p) return res.redirect('/admin/settings#proxy');
+  try {
+    const r = await browserCheck.testProxy(refs.proxyRef(p.name));
+    const seen = r.ip ? `, exit IP ${r.ip}` : r.title ? ` — "${r.title}"` : '';
+    renderProxy(req, res, { ok: `Proxy "${p.name}": OK — HTTP ${r.status} in ${(r.loadMs / 1000).toFixed(1)} s${seen}` });
+  } catch (err) {
+    renderProxy(req, res, { error: err.message.startsWith('Proxy "') ? err.message : `Proxy "${p.name}": ${err.message}` });
+  }
+});
+
+router.post('/proxies/:id/delete', (req, res) => {
+  const p = db.getProxyById(req.params.id);
+  if (!p) return res.redirect('/admin/settings#proxy');
+  const usedBy = db.getProxyRefUsage()[refs.proxyRef(p.name)] || [];
+  if (usedBy.length) {
+    return renderProxy(req, res, { error: `"${p.name}" is in use (${usedBy.join(', ')}) — choose something else there first` });
+  }
+  db.deleteProxy(p.id);
+  proxyPool.forget(refs.proxyRef(p.name));
+  res.redirect('/admin/settings?ok=proxy_deleted#proxy');
 });
 
 // --- WireGuard configs (Settings → WireGuard) ---
@@ -356,6 +626,7 @@ router.post('/wireguard/:id', express.urlencoded({ extended: true }), async (req
   }
   db.updateWireguardConfig(cfg.id, { name, config: config + '\n' });
   await wireguard.stop(cfg.name); // the running tunnel still has the old config
+  proxyPool.forget(refs.wireguardRef(cfg.name));
   res.redirect('/admin/settings?ok=wg_saved#wireguard');
 });
 
@@ -376,10 +647,11 @@ router.post('/wireguard/:id/delete', async (req, res) => {
   if (!cfg) return res.redirect('/admin/settings#wireguard');
   const usedBy = db.getWireguardUsage()[cfg.name] || [];
   if (usedBy.length) {
-    return renderWireguard(req, res, { error: `"${cfg.name}" is ticked on website(s) ${usedBy.join(', ')} — untick it there first` });
+    return renderWireguard(req, res, { error: `"${cfg.name}" is in use (${usedBy.join(', ')}) — choose something else there first` });
   }
   db.deleteWireguardConfig(cfg.id);
   await wireguard.stop(cfg.name);
+  proxyPool.forget(refs.wireguardRef(cfg.name));
   res.redirect('/admin/settings?ok=wg_deleted#wireguard');
 });
 
@@ -483,18 +755,8 @@ function timezoneField(value) {
   return tz;
 }
 
-// The ticked WireGuard configs (checkboxes: none, one value or several), in Settings order.
-// Kept while the proxy list is in use too, so switching the type back loses nothing.
-function wireguardField(body) {
-  const picked = new Set([].concat(body.wireguard || []).filter((v) => typeof v === 'string'));
-  const names = db.getWireguardConfigs().map((c) => c.name).filter((n) => picked.has(n));
-  if (body.proxy_type === 'wireguard' && !names.length) {
-    throw new Error('Proxy type WireGuard: tick at least one WireGuard config (add them under Settings → WireGuard)');
-  }
-  return names.join('\n') || null;
-}
-
-function websiteFromBody(body) {
+// `current`: the website being edited (null for a new one)
+function websiteFromBody(body, current = null) {
   const name = (body.name || '').trim().toLowerCase();
   const baseUrl = (body.base_url || '').trim();
   if (!name) throw new Error('Name is required');
@@ -503,11 +765,8 @@ function websiteFromBody(body) {
     name,
     base_url: baseUrl,
     active: body.active === 'on',
-    // One proxy per line; a typo is a form error, not a crawl that silently goes direct
-    proxy: proxyPool.normalizeProxyList(body.proxy) || null,
-    proxy_type: body.proxy_type === 'wireguard' ? 'wireguard' : 'proxy',
-    wireguard: wireguardField(body),
-    proxy_rotation: proxyPool.ROTATIONS.includes(body.proxy_rotation) ? body.proxy_rotation : 'round_robin',
+    proxy_refs: pickerChoice(body, { allowDefault: true, keep: current ? refs.refList(current.proxy_refs) : [] }),
+    proxy_rotation: rotationField(body.proxy_rotation),
     user_agent: body.user_agent,
     image_proxy: body.image_proxy === 'on',
     image_cache_method: IMAGE_CACHE_METHODS.includes(body.image_cache_method) ? body.image_cache_method : 'browser',
@@ -520,14 +779,18 @@ function websiteFromBody(body) {
 
 function websiteFormLocals(req, website, extra = {}) {
   const isEdit = !!(website && website.id);
+  const selection = proxyPool.selectionFor(website);
   return {
     website,
     pageConfigs: isEdit ? db.getPageConfigs(website.id) : [],
     pageTypes: getPageTypesForWebsite(isEdit ? website.id : null),
     customPageTypes: isEdit ? db.getCustomPageTypes(website.id) : [],
-    proxyStatus: proxyPool.status(proxyPool.websiteProxies(website)),
-    wireguardConfigs: db.getWireguardConfigs().map((c) => ({ name: c.name, ...wireguard.summarize(c.config) })),
-    wireproxyInstalled: !!wireguard.executablePath(),
+    picker: pickerLocals('wp', website && website.proxy_refs, website && website.proxy_rotation, { allowDefault: true }),
+    proxySource: selection.source,
+    proxyStatus: proxyStatusOf(selection.entries),
+    // Only when moving its old list to Settings → Proxy failed (see convertLegacyProxies)
+    legacyProxy: isEdit && website.proxy_refs == null && selection.entries.length > 0,
+    wireproxyMissing: !wireguard.executablePath() && selection.entries.some((e) => (refs.parseRef(e) || {}).type === 'wireguard'),
     page: isEdit ? 'website-edit' : 'websites',
     apiBase: apiBaseUrl(req),
     apiKeySet: !!db.getSetting('api_key'),
@@ -547,7 +810,7 @@ router.post('/websites', express.urlencoded({ extended: true }), (req, res) => {
     res.redirect(`/admin/websites/${info.lastInsertRowid}?ok=website_created`);
   } catch (err) {
     const message = err.message.includes('UNIQUE') ? `A website named "${(req.body.name || '').trim().toLowerCase()}" already exists` : err.message;
-    res.render('pages/website-form', websiteFormLocals(req, { ...req.body, image_proxy: req.body.image_proxy === 'on', wireguard: [].concat(req.body.wireguard || []).join('\n') }, {
+    res.render('pages/website-form', websiteFormLocals(req, { ...req.body, image_proxy: req.body.image_proxy === 'on', proxy_refs: pickerRaw(req.body) }, {
       error: message, flash: { type: 'danger', text: message },
     }));
   }
@@ -640,12 +903,12 @@ router.post('/websites/:id', express.urlencoded({ extended: true }), (req, res) 
   const website = db.getWebsiteById(req.params.id);
   if (!website) return res.redirect('/admin');
   try {
-    db.updateWebsite(req.params.id, websiteFromBody(req.body));
+    db.updateWebsite(req.params.id, websiteFromBody(req.body, website));
     res.redirect(`/admin/websites/${req.params.id}?ok=website_saved`);
   } catch (err) {
     const message = err.message.includes('UNIQUE') ? `A website named "${(req.body.name || '').trim().toLowerCase()}" already exists` : err.message;
     // Keep what the admin typed — checkboxes are absent from the body when unchecked
-    const edited = { ...website, ...req.body, image_proxy: req.body.image_proxy === 'on', active: req.body.active === 'on', wireguard: [].concat(req.body.wireguard || []).join('\n') };
+    const edited = { ...website, ...req.body, image_proxy: req.body.image_proxy === 'on', active: req.body.active === 'on', proxy_refs: pickerRaw(req.body) };
     res.render('pages/website-form', websiteFormLocals(req, edited, {
       error: message, flash: { type: 'danger', text: message },
     }));
@@ -878,8 +1141,7 @@ router.post('/logs/delete-old', (req, res) => {
 // opens that website's base URL through its proxy and reports a challenge page.
 router.get('/browser-check', async (req, res) => {
   try {
-    const { runBrowserCheck } = require('../services/browser-check');
-    const report = await runBrowserCheck(req.query.website || undefined);
+    const report = await browserCheck.runBrowserCheck(req.query.website || undefined);
     res.json(report);
   } catch (err) {
     const notFound = /not found$/.test(err.message);

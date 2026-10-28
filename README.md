@@ -25,8 +25,8 @@ Situs di balik Cloudflare/CAPTCHA tetap butuh crawler berbasis Chrome (crawlkomi
 - **Challenge detection** — Cloudflare/DDoS-Guard interstitials, Turnstile/reCAPTCHA/hCaptcha widgets and "verify you are human" pages make the crawl fail fast with a clear error (not retried), instead of returning the challenge page as data. Toggle in Settings
 - **Cek Lightpanda** (Settings) — starts the browser and reports version, JS, cookies, the User-Agent it really sends and its timezone; per website it also opens the base URL through that website's proxy and says whether a challenge page came back
 - **Custom headers & cookies** per website (optional) — session cookies auto-saved when a challenge page clears by itself
-- **Proxy & rotate proxy** per website — HTTP/HTTPS/SOCKS5 with login, `host:port:user:pass` lists; several proxies rotate (round-robin / random / failover), a failing proxy is swapped for the next one within the same request and rested for 5 minutes — see [Proxy & rotasi proxy](#proxy--rotasi-proxy)
-- **WireGuard (VPN)** as a second proxy type — configs (`.conf`) are added once in Settings, each website ticks the ones it crawls through (rotated like proxies). Userspace via [wireproxy](https://github.com/whyvl/wireproxy): no root, no NET_ADMIN, ~12 MB per tunnel, started on demand — see [WireGuard (VPN)](#wireguard-vpn)
+- **Proxy & rotate proxy** — proxies (HTTP/HTTPS/SOCKS5 with login, `host:port:user:pass` lists) are kept once in Settings → Proxy, with a **global default**; each website picks from a select: *Default global*, *no proxy*, or one or more proxies / WireGuard configs in its own order. Several rotate (round-robin / random / failover), a failing one is swapped for the next within the same request and rested for 5 minutes — see [Proxy & rotasi proxy](#proxy--rotasi-proxy)
+- **WireGuard (VPN)** as a second kind of proxy — configs (`.conf`) are added once in Settings and picked in the same select (mixable with proxies). Userspace via [wireproxy](https://github.com/whyvl/wireproxy): no root, no NET_ADMIN, ~12 MB per tunnel, started on demand — see [WireGuard (VPN)](#wireguard-vpn)
 - **Timezone per website** — the browser clock (`Date`/`Intl`); the container runs in UTC
 - **Image proxy/cache** - caches images through server for blob URLs or referrer-restricted sources
   - Toggle per website in admin panel
@@ -131,6 +131,7 @@ npm run dev      # with auto-reload
 | `LIGHTPANDA_DISABLE_CORE_DUMP` | set in Docker | no core dumps when the browser crashes |
 | `WIREPROXY_EXECUTABLE_PATH` | `wireproxy` on `PATH` | wireproxy binary for WireGuard configs (in the Docker image) |
 | `WIREGUARD_IDLE_SECONDS` | `300` | an unused WireGuard tunnel stops after this long; the next crawl starts it again (one handshake) |
+| `PROXY_TEST_URL` | `https://example.com/` | what **Test** in Settings → Proxy opens through a proxy. An address echo such as `https://api.ipify.org/` also shows the proxy's exit IP |
 | `TRUST_PROXY` | – | `1` when behind nginx/Caddy — the login brake then counts each visitor's IP instead of the proxy's. Never without such a proxy (clients could fake their IP) |
 
 ## Pindah dari crawlkomik
@@ -161,8 +162,11 @@ Dua jenis backup, keduanya file SQLite `.db` dengan tabel yang sama:
 - **Lengkap** — Settings → Backup & Restore: seluruh database (semua website, settings, akun admin, log).
   Restore mengganti semuanya.
 - **Per website** — halaman website → **Backup & Restore** (atau ikon unduh di Dashboard): hanya website
-  itu — pengaturan (termasuk proxy dan cookie), page config, dan custom page type. Akun admin, API key,
-  settings lain, log, dan cache gambar tidak ikut. Nama file `pinguincrawl-backup-<website>-<waktu>.db`.
+  itu — pengaturan (termasuk cookie dan proxy yang dipilihnya, lengkap dengan alamat + login), page config,
+  dan custom page type. Akun admin, API key, settings lain (termasuk default global proxy), log, dan cache
+  gambar tidak ikut; config WireGuard hanya namanya. Nama file `pinguincrawl-backup-<website>-<waktu>.db`.
+  Saat di-restore, proxy-nya masuk ke Settings → Proxy (yang alamatnya sama dipakai ulang; nama yang sudah
+  dipakai proxy lain diberi akhiran `-2`).
 
 Restore per website:
 - **Di halaman website**: upload backup website itu, atau backup lengkap — website dengan nama yang sama
@@ -181,24 +185,36 @@ Restore per website:
 - Proses Lightpanda yang tertinggal karena Node di-kill paksa (OOM, `SIGKILL`) dibunuh saat server start dan tiap 30 menit.
 
 ## Proxy & rotasi proxy
-Field **Proxy** di form website, satu proxy per baris:
-```
-http://user:pass@1.2.3.4:8080
-socks5://user:pass@5.6.7.8:1080
-9.9.9.9:3128:user:pass
-```
-- **Format**: `http://`, `https://`, `socks4://`, `socks5://` (DNS ikut di-resolve proxy), tanpa skema = HTTP, dan `host:port:user:pass` (format daftar dari penyedia proxy — password boleh berisi `:` atau `@`). Di format URL, karakter khusus ditulis ter-encode (`@` → `%40`). Baris kosong dan baris berawalan `#` diabaikan; baris yang salah ditolak saat Save dengan nomor barisnya.
-- **Rotasi** (pilihan *Rotasi proxy*): **Bergiliran** — tiap crawl proxy berikutnya; **Acak**; **Cadangan** — selalu proxy pertama, sisanya hanya saat proxy itu gagal.
-- **Proxy gagal** (tidak bisa dihubungi, login salah, terlalu lambat) langsung diganti proxy lain di request yang sama — maks. 3 kali, tidak memakai jatah *Retry count* — lalu **diistirahatkan 5 menit**. Kalau semua sedang istirahat, semuanya tetap dicoba. Error API menyebut proxy-nya (tanpa password), mis. `CouldntConnect at https://… [proxy http://1.2.3.4:8080]`.
-- **Status**: halaman edit website menampilkan status tiap proxy (OK / gagal · istirahat / belum dipakai); **Cek semua proxy** (atau Settings → Cek Lightpanda per website) membuka base URL lewat tiap proxy. Status disimpan di memori, mulai dari nol setelah restart.
+Semua proxy disimpan sekali di **Settings → Proxy**, lalu tiap website memilihnya — tidak ada lagi daftar
+proxy per website.
+1. **Settings → Proxy → Tambah proxy**: satu alamat per baris (boleh banyak sekaligus). Nama otomatis dari
+   host-port (`1.2.3.4-8080`), atau isi *Nama* — untuk beberapa baris jadi awalan (`sg-1`, `sg-2`, …).
+   Proxy yang sama (alamat + login sama) tidak masuk dua kali.
+   ```
+   http://user:pass@1.2.3.4:8080
+   socks5://user:pass@5.6.7.8:1080
+   9.9.9.9:3128:user:pass
+   ```
+2. **Default global** (Settings → Proxy): tanpa proxy, atau satu / beberapa proxy dan config WireGuard +
+   rotasinya. Dipakai semua website yang memilih *Default global* — termasuk website baru.
+3. **Form website → Proxy / VPN** (select): *Default global*, *Tanpa proxy — koneksi langsung*, atau satu
+   proxy / config WireGuard. **Tambah proxy / VPN lain** menambah baris berikutnya (nomor 2, 3, …) untuk
+   rotasi atau cadangan, lalu pilih *Rotasi*.
+
+- **Format**: `http://`, `https://`, `socks4://`, `socks5://` (DNS ikut di-resolve proxy), tanpa skema = HTTP, dan `host:port:user:pass` (format daftar dari penyedia proxy — password boleh berisi `:` atau `@`). Di format URL, karakter khusus ditulis ter-encode (`@` → `%40`). Baris kosong dan baris berawalan `#` diabaikan; baris yang salah ditolak dengan nomor barisnya.
+- **Edit** proxy (alamat, login, nama) cukup di Settings → Proxy — semua website yang memakainya ikut, termasuk ganti nama. Proxy yang masih dipakai website atau default global tidak bisa dihapus.
+- **Rotasi**: **Bergiliran** — tiap crawl yang berikutnya; **Acak**; **Cadangan** — selalu nomor 1, sisanya hanya saat itu gagal (urutan = urutan baris di select). Proxy dan config WireGuard boleh dicampur.
+- **Proxy gagal** (tidak bisa dihubungi, login salah, terlalu lambat) langsung diganti yang lain di request yang sama — maks. 3 kali, tidak memakai jatah *Retry count* — lalu **diistirahatkan 5 menit**. Kalau semua sedang istirahat, semuanya tetap dicoba. Error API menyebut proxy-nya (tanpa password), mis. `CouldntConnect at https://… [proxy sg-1 (http://1.2.3.4:8080)]`.
+- **Status**: Settings → Proxy dan halaman edit website menampilkan status tiap proxy (OK / gagal · istirahat / belum dipakai). **Test** (Settings → Proxy) membuka `PROXY_TEST_URL` lewat proxy itu dengan Lightpanda, persis seperti crawl; **Cek semua** di halaman website (atau Settings → Cek Lightpanda per website) membuka base URL lewat tiap proxy-nya. Status disimpan di memori, mulai dari nol setelah restart.
 - **Yang lewat proxy**: halaman, semua request JavaScript-nya, dan cache gambar metode **Browser**. **Tidak** lewat proxy: metode **Node.js HTTP**, **Lazy Proxy**, dan mode HTTP biasa (JS off). Page config bisa mematikan proxy per page type (**Force OFF**).
+- **Upgrade dari versi lama** (atau restore backup lama / crawlkomik): daftar proxy tiap website otomatis dipindah ke Settings → Proxy dan website itu memilihnya dengan urutan + rotasi yang sama; pilihan WireGuard ikut pindah. Website tanpa proxy jadi *Default global* (default awalnya: tanpa proxy), jadi crawl tetap sama persis.
 - Kredensial proxy diteruskan ke Lightpanda di argumen `--http-proxy` — satu-satunya cara yang jalan untuk situs HTTPS (tunnel CONNECT) dan SOCKS. Artinya user lain di mesin yang sama bisa melihatnya lewat `ps`; di dalam container Docker hal ini tidak berlaku.
 
 ## WireGuard (VPN)
 Jenis proxy kedua: crawl lewat VPN WireGuard (Mullvad, ProtonVPN, Surfshark, WARP, server sendiri, …).
 1. **Settings → WireGuard**: upload file `.conf` dari penyedia VPN (boleh banyak sekaligus — nama config = nama file) atau tempel isinya dan beri nama. Config dicek saat disimpan (kunci, Address, Endpoint, AllowedIPs; juga oleh `wireproxy -n`).
-2. **Form website → Jenis proxy → WireGuard (VPN)**, centang config yang dipakai. Lebih dari satu dirotasi sama seperti proxy (Bergiliran / Acak / Cadangan); mode Cadangan memakai urutan nama — awali nama dengan angka (`1-sg`, `2-jp`) untuk mengatur prioritas. Daftar proxy tetap tersimpan, jadi bisa ganti jenis kapan saja.
-3. **Test** di daftar config (Settings) menyalakan tunnel dan menunggu handshake; **Cek semua proxy** di halaman website membuka base URL lewat tiap config.
+2. **Form website → Proxy / VPN**: pilih config-nya di select (grup *WireGuard (VPN)*), atau jadikan **default global** di Settings → Proxy. Lebih dari satu (juga campur dengan proxy biasa) dirotasi sama seperti proxy (Bergiliran / Acak / Cadangan), dengan urutan yang kamu tentukan.
+3. **Test** di daftar config (Settings) menyalakan tunnel dan menunggu handshake; **Cek semua** di halaman website membuka base URL lewat tiap config.
 
 Cara kerjanya — ringan dan tanpa hak khusus:
 - Tiap config dijalankan sebagai satu proses [wireproxy](https://github.com/whyvl/wireproxy) (WireGuard userspace + SOCKS5 di `127.0.0.1`, ±12 MB RAM), **hanya saat dipakai**: dinyalakan oleh crawl pertama, dipakai bersama semua crawl dan website yang memilih config itu, dan **berhenti sendiri setelah 5 menit** tidak dipakai (`WIREGUARD_IDLE_SECONDS`). Tidak butuh root, `NET_ADMIN`, modul kernel, atau `--cap-add` di Docker, dan lalu lintas container lain tidak terpengaruh.
@@ -253,9 +269,9 @@ Example: `/api/katalog?website=mywebsite&url=https://example.com/latest/&html=tr
 - Regex replace rules per page type (post-scrape text transformation)
 - Custom response fields — add extra fields to API response (string, array, object_array with sub-fields)
 - Custom headers & cookies per website (JSON fields in website form)
-- Proxy list or WireGuard configs + rotation mode per website, with per-proxy status and "Cek semua proxy"
+- Proxy / VPN select per website (global default, no proxy, or proxies / WireGuard configs in order + rotation mode), with per-proxy status and "Cek semua"
 - View API logs (`/admin/logs`) — filter, stats, delete all/errors/old; logs >2 weeks auto-deleted
-- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, WireGuard configs, your own password, 2FA, logout all devices
+- Settings (`/admin/settings`) — max browsers, retry, challenge detection, **Cek Lightpanda**, API key (+ generate), IP whitelist, proxies (+ test) and the global default proxy, WireGuard configs, your own password, 2FA, logout all devices
 - Backup & restore database (Settings → Backup & Restore), or one website (its page → Backup & Restore)
 - Storage (`/admin/storage`) — disk & inode usage, cleanup, image cache retention / size cap
 
@@ -278,7 +294,8 @@ src/
   services/lightpanda.js  # Lightpanda processes: start (port 0), stop, sweep orphans, version
   services/browser.js # Puppeteer-core over CDP: per-crawl browser, page setup, actions, challenge check
   services/browser-check.js # "Cek Lightpanda" self-check (per proxy for a website)
-  services/proxy-pool.js # Proxy list parsing, rotation (round-robin/random/failover), cooldown of failing proxies
+  services/proxy-pool.js # What a website crawls through (own choice / global default), rotation (round-robin/random/failover), cooldown of failing proxies
+  services/proxy-refs.js # How websites refer to Settings proxies and WireGuard configs ("proxy:<name>", "wireguard:<name>", default, none)
   services/storage.js # Disk/inode report + cleanup jobs (Storage page)
   services/login-guard.js # Brute-force brake for login and password confirmations
   services/backup.js  # Backup files: website backup (same .db format as the full one), website restore, pre-restore snapshot

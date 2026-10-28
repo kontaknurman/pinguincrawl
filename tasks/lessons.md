@@ -108,6 +108,15 @@
 
 ---
 
+## 2026-10-28 - Data Migration
+
+**Mistake**: The first draft of the proxy library treated a website whose `proxy_refs` was still NULL (old per-website list, not converted yet) as "Default global". If the conversion ever failed, those websites would have crawled through the global default — or directly — instead of their own proxies, without any error.
+**Pattern**: When a stored format is replaced, "not converted yet" is a real runtime state (a failed migration, an old backup just restored). Mapping it to the new format's default silently changes behaviour — here: which IP a website crawls from.
+**Rule**: Until a row is converted, keep running it with its old meaning (read the old columns), make the conversion all-or-nothing and retry it, and only map "nothing configured" to the new default.
+**Applied**: `src/services/proxy-pool.js` `selectionFor()`, `src/models/database.js` `convertLegacyProxies()`, `src/services/backup.js` `restoreWebsite()`
+
+---
+
 ## 2026-03-20 - Feature Scope
 
 **Mistake**: When user asked for "custom config", implemented only custom JSON response fields. User actually wanted custom page types (new config types + API endpoints), not just custom fields within existing configs.

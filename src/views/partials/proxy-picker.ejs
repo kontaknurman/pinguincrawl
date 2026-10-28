@@ -1,0 +1,44 @@
+<%
+  // Proxy / VPN choice of a website or of the global default (locals: picker, built by
+  // pickerLocals in routes/admin.js). Submits proxy_main, proxy_more (repeated, in order) and
+  // proxy_rotation. Adding rows needs JavaScript (public/admin.js); the main choice doesn't.
+  const p = picker;
+  const entryCount = p.groups.reduce((n, g) => n + g.items.length, 0);
+  const several = !p.keyword && p.selected.length > 1;
+%>
+<div class="proxy-picker" data-proxy-picker>
+  <label class="form-label" for="<%= p.id %>_main">Proxy / VPN</label>
+  <div class="input-group">
+    <span class="input-group-text" data-picker-index <%= several ? '' : 'hidden' %>>1</span>
+    <select class="form-select" id="<%= p.id %>_main" name="proxy_main" data-picker-main>
+      <% if (p.allowDefault) { %><option value="default" <%= p.keyword === 'default' ? 'selected' : '' %>><%= p.defaultLabel %></option><% } %>
+      <option value="none" <%= p.keyword === 'none' ? 'selected' : '' %>>Tanpa proxy — koneksi langsung</option>
+      <% p.groups.forEach(g => { %>
+        <optgroup label="<%= g.label %>">
+          <% g.items.forEach(o => { %><option value="<%= o.value %>" <%= !p.keyword && p.selected[0] === o.value ? 'selected' : '' %>><%= o.label %></option><% }) %>
+        </optgroup>
+      <% }) %>
+    </select>
+  </div>
+  <% if (!entryCount) { %>
+    <small class="form-hint">Belum ada proxy atau config WireGuard untuk dipilih — tambahkan di <a href="/admin/settings#proxy">Settings → Proxy</a> atau <a href="/admin/settings#wireguard">WireGuard</a>.</small>
+  <% } %>
+  <div data-picker-extra <%= p.keyword ? 'hidden' : '' %>>
+    <div data-picker-rows>
+      <% p.selected.slice(1).forEach((ref, i) => { %><%- include('proxy-picker-row', { groups: p.groups, value: ref, index: i + 2 }) %><% }) %>
+    </div>
+    <% if (entryCount > 1) { %>
+      <button type="button" class="btn btn-sm btn-link px-0 mt-1 text-start" data-picker-add hidden><i class="bi bi-plus-lg me-1"></i>Tambah proxy / VPN lain (rotasi atau cadangan)</button>
+      <template data-picker-template><%- include('proxy-picker-row', { groups: p.groups, value: null, index: '' }) %></template>
+    <% } %>
+    <div class="mt-2" data-picker-rotation <%= several ? '' : 'hidden' %>>
+      <label class="form-label small mb-1" for="<%= p.id %>_rotation">Rotasi</label>
+      <select class="form-select form-select-sm" id="<%= p.id %>_rotation" name="proxy_rotation">
+        <% [['round_robin', 'Bergiliran — tiap crawl pakai yang berikutnya'], ['random', 'Acak — tiap crawl pilih secara acak'], ['failover', 'Cadangan — selalu nomor 1, sisanya hanya saat itu gagal']].forEach(([val, label]) => { %>
+          <option value="<%= val %>" <%= p.rotation === val ? 'selected' : '' %>><%= label %></option>
+        <% }) %>
+      </select>
+      <small class="form-hint">Yang gagal otomatis diganti yang berikutnya dan diistirahatkan 5 menit.</small>
+    </div>
+  </div>
+</div>
